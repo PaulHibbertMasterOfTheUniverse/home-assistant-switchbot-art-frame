@@ -105,8 +105,83 @@ class AppClient:
         return await self.post('/command/cmd/api/v1/func/invoke',body)
 
     async def show(self, index, model='frame2'):
-        await self.invoke(9604 if model=='frame1' else 9626,{'0':index,'1':0,'2':0})
-        await self.invoke(9602 if model=='frame1' else 9622,{'0':index})
+        if model=='frame1':
+            await self.invoke(9602,{'0':index})
+            return
+        await self.invoke(9626,{'0':index,'1':0,'2':0})
+        await self.invoke(9622,{'0':index})
+
+    async def refresh_image(self,index,trace=None):
+        """Refresh one original-frame device copy, retaining its cloud artwork."""
+        self.last_refresh={'index':index,'started_at':time.time(),'events':[]}
+        async def note(stage,**details):
+            self.last_refresh['stage']=stage
+            self.last_refresh['events'].append({'at':time.time(),'stage':stage,**details})
+            if trace:
+                await trace(self.last_refresh)
+        async def observe(state):
+            selected=state.get('9601',{}).get('value')
+            stored=state.get('9606',{}).get('value')
+            if (selected,stored)!=(self.last_refresh.get('selected_index'),self.last_refresh.get('stored_indices')):
+                await note('shadow_report',selected_index=selected,stored_indices=stored)
+            self.last_refresh.update(selected_index=selected,stored_indices=stored,last_checked_at=time.time())
+            return stored
+        if type(index) is not int or not 1<=index<=255:
+            raise FrameError('Invalid original-frame image index')
+        await note('catalogue_preflight')
+        images=await self.catalogue()
+        if not isinstance(images,list) or not any(isinstance(item,dict) and item.get('imageIndex')==index for item in images):
+            raise FrameError('Picture is not in the cloud album; device copy left unchanged')
+        stored=await observe(await self.reported_state())
+        if not isinstance(stored,list):
+            await note('initial_storage_unknown')
+            raise FrameError('Cannot verify device storage before refresh; device copy left unchanged')
+        if index in stored:
+            await note('wake_before_release',function=9609)
+            await self.invoke(9609)
+            await asyncio.sleep(5)
+            await note('device_release',function=9601,params={'0':2,'1':index})
+            await self.invoke(9601,{'0':2,'1':index})
+            for _ in range(30):
+                stored=await observe(await self.reported_state())
+                if isinstance(stored,list) and index not in stored:
+                    break
+                await asyncio.sleep(3)
+            else:
+                await note('release_timeout')
+                raise FrameError('Frame has not confirmed releasing the picture; download not attempted')
+            await note('release_confirmed')
+        else:
+            await note('already_absent_release_skipped')
+        for download_attempt in range(1,3):
+            await note('wake_before_download',attempt=download_attempt,function=9609)
+            await self.invoke(9609)
+            await asyncio.sleep(5)
+            await note('download_request',attempt=download_attempt,function=9601,params={'0':1,'1':index})
+            await self.invoke(9601,{'0':1,'1':index})
+            await note('download_request_accepted',attempt=download_attempt)
+            for _ in range(40):
+                state=await self.reported_state()
+                stored=await observe(state)
+                if isinstance(stored,list) and index in stored:
+                    break
+                await asyncio.sleep(3)
+            else:
+                await note('download_presence_timeout',attempt=download_attempt)
+                if download_attempt<2:
+                    await note('download_retry_backoff',seconds=10)
+                    await asyncio.sleep(10)
+                continue
+            await note('storage_confirmed',attempt=download_attempt)
+            break
+        else:
+            await note('download_failed_after_two_attempts')
+            raise FrameError('Frame has not confirmed storing the refreshed picture after two bounded download attempts; selection not attempted')
+        await note('settling_before_selection',seconds=10)
+        await asyncio.sleep(10)
+        await note('selection_request',function=9602,params={'0':index})
+        await self.show(index,'frame1')
+        await note('selection_request_accepted_not_physical_confirmation')
 
     async def normal(self, indices, model='frame2'):
         if not indices: raise FrameError('No normal artwork remains to restore')

@@ -382,7 +382,8 @@ class Manager:
                     if not self.mode_matches(await frame.mode_info(),index):raise FrameError('Frame did not confirm selection')
                     self.last_transport='Bluetooth';self.last_storage_verified=True
                 else:
-                    await self.client.show(index,self.config.get('model','frame2'))
+                    if self.config.get('model')=='frame1':await self.client.refresh_image(index)
+                    else:await self.client.show(index,self.config.get('model','frame2'))
                     self.last_transport='SwitchBot cloud / Wi-Fi';self.last_storage_verified=False
             self.last_action='Stored picture selection requested';self.publish('art_selected' if frame else 'cloud_request_accepted')
 
@@ -841,6 +842,8 @@ async def async_setup(hass,config):
     hass.http.register_view(PrepareView(registry))
     from .generation import GenerateView
     hass.http.register_view(GenerateView(registry))
+    from .gallery import async_setup as setup_gallery
+    await setup_gallery(hass,{'frame_art_gallery':{'directory':'frame_art_gallery'}})
     def target(call):
         try:return registry.select(call.data.get('frame_id'))
         except FrameError as error:raise HomeAssistantError(str(error)) from None
@@ -895,7 +898,7 @@ async def async_setup(hass,config):
         from homeassistant.components.http import StaticPathConfig
         from homeassistant.components.frontend import add_extra_js_url
         await hass.http.async_register_static_paths([StaticPathConfig('/switchbot_frame_control/frame-upload-card.js',str(Path(__file__).parent/'frontend/frame-upload-card.js'),True)])
-        add_extra_js_url(hass,'/switchbot_frame_control/frame-upload-card.js?v=0.6.0-beta.1')
+        add_extra_js_url(hass,'/switchbot_frame_control/frame-upload-card.js?v=0.7.0-beta.1')
     return True
 
 

@@ -1,7 +1,7 @@
 {
   "domain": "switchbot_frame_control",
   "name": "SwitchBot Frame Control",
-  "version": "0.6.0-beta.1",
+  "version": "0.7.0-beta.1",
   "documentation": "https://github.com/PaulHibbertMasterOfTheUniverse/home-assistant-switchbot-art-frame",
   "dependencies": [
     "http",
