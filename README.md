@@ -1,6 +1,6 @@
 # SwitchBot Art Frame Control for Home Assistant
 
-Upload pictures, create artwork, control multiple frames and show a notification image from a Home Assistant switch.
+Upload pictures, save a private artwork gallery in Home Assistant, create artwork, control multiple frames and show notification or bin-day pictures from automations.
 
 **Public beta.** The device controls have been tested on real frames. Guided setup is new in this release. This is an independent custom integration, not an official SwitchBot integration.
 
@@ -39,6 +39,14 @@ The repository follows the custom-integration layout used by HACS and the Home A
 Choose the destination, set portrait or landscape and rotate 180° if needed, then upload a JPEG, PNG or WebP. Home Assistant prepares large source images before the phone renders its preview (up to 64 MiB and 80 megapixels). Review the centre crop, then press **Send to frame**. A 31.5-inch picture needs additional colour-processing time.
 
 If the frame or its cloud album is full, the dashboard asks before replacing the oldest eligible picture. If a cloud entry must be removed, it first saves a private JPEG backup in Home Assistant. **Download last replaced picture** prepares an explicit **Save backup JPEG** link. The tracked notification picture is protected from oldest-picture replacement.
+
+## Private Home Assistant gallery
+
+The dashboard now includes **Home Assistant artwork gallery**. Upload or generate a picture, give it a name, and press **Save current picture to gallery**. Select a saved picture and press **Send to frame**. The gallery is shared across your configured frames; sending uses the selected destination and its own orientation.
+
+**Add bin artwork** imports the optional blue-bin, black-bin and no-collection pictures. Nothing is sent automatically. Each gallery item shows its ID for automations. Gallery pictures stay in your private HA configuration folder, outside public `www` hosting. Delivery still follows the destination's connection mode: gallery storage does not turn original-frame Wi-Fi uploads into a local network API.
+
+See [gallery actions](docs/GALLERY.md) and the optional [bin-day reminder setup](docs/BIN-REMINDER.md). The bin reminder restores the previous picture and verifies removal of its temporary device copy; it does not leave the bin in normal rotation.
 
 ## Notification picture / “baby asleep” example
 
