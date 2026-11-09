@@ -1,0 +1,80 @@
+show_baby:
+  name: Show baby asleep picture
+  description: Show the configured notification picture using the selected connection mode.
+  fields:
+    frame_id:
+      name: Frame
+      description: Configured frame id. Required with multiple frames unless default_frame is set.
+      example: main_frame
+      selector:
+        text:
+restore_normal:
+  name: Restore normal slideshow
+  description: Restore the selected frame’s slideshow, excluding its tracked notification picture.
+  fields:
+    frame_id:
+      name: Frame
+      description: Configured frame id. Required with multiple frames unless default_frame is set.
+      example: main_frame
+      selector:
+        text:
+repair_connection:
+  name: Reconnect frame after reset
+  description: Use retained SwitchBot sign-in to refresh this frame’s Bluetooth key or Wi-Fi connection.
+  fields:
+    frame_id:
+      name: Frame
+      description: Configured frame id. Required with multiple frames unless default_frame is set.
+      example: main_frame
+      selector:
+        text:
+
+set_connection_mode:
+  name: Set frame connection mode
+  description: Choose Bluetooth only, prefer Bluetooth with Wi-Fi/cloud fallback, or Wi-Fi/cloud only for this frame.
+  fields:
+    frame_id:
+      description: Configured destination frame id.
+      example: small_frame
+      selector:
+        text:
+    mode:
+      required: true
+      selector:
+        select:
+          options:
+            - local
+            - hybrid
+            - wifi
+
+select_image:
+  name: Select stored picture
+  description: Select an existing picture using this frame's saved connection mode.
+  fields:
+    frame_id:
+      selector:
+        text:
+    index:
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 20480
+reconcile_cloud_registration:
+  name: Reconcile pending cloud registration
+  description: Recover an existing registration by its uploaded filename. Only confirm rejection after checking the server response; this never deletes artwork.
+  fields:
+    frame_id:
+      selector:
+        text:
+    confirm_rejected:
+      default: false
+      selector:
+        boolean:
+backup_current_picture:
+  name: Back up current picture
+  description: Save a private JPEG backup of the selected original-frame cloud picture without changing the frame. Download it from the dashboard.
+  fields:
+    frame_id:
+      selector:
+        text:

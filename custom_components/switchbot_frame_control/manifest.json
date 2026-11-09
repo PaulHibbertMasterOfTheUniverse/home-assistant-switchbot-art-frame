@@ -1,0 +1,17 @@
+{
+  "domain": "switchbot_frame_control",
+  "name": "SwitchBot Frame Control",
+  "version": "0.6.0-beta.1",
+  "documentation": "https://github.com/PaulHibbertMasterOfTheUniverse/home-assistant-switchbot-art-frame",
+  "dependencies": [
+    "http",
+    "frontend",
+    "bluetooth"
+  ],
+  "requirements": [],
+  "iot_class": "cloud_polling",
+  "codeowners": [],
+  "config_flow": true,
+  "issue_tracker": "https://github.com/PaulHibbertMasterOfTheUniverse/home-assistant-switchbot-art-frame/issues",
+  "integration_type": "hub"
+}

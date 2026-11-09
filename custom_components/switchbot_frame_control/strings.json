@@ -1,0 +1,57 @@
+{
+  "title": "SwitchBot Frame Control",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect your SwitchBot app account",
+        "description": "Sign in to discover your frames and retrieve connection keys. No image is sent during setup. Use your app login, not the web-store account.",
+        "data": {
+          "username": "App email",
+          "password": "App password"
+        }
+      },
+      "frame": {
+        "title": "Choose an art frame",
+        "data": {
+          "device_id": "Frame"
+        }
+      },
+      "details": {
+        "title": "Choose how this frame works",
+        "description": "Bluetooth-only image upload is supported for the 13.3-inch Frame 2. Original frames need Wi-Fi and SwitchBot cloud for new pictures. Retaining cloud sign-in is optional for Bluetooth-only use. Notification settings are optional.",
+        "data": {
+          "name": "Name in Home Assistant",
+          "panel_size": "Screen size (inches)",
+          "connection_mode": "Connection mode",
+          "keep_cloud_login": "Retain SwitchBot sign-in for Wi-Fi and reconnect",
+          "waterfall_entity": "Notification switch (optional)",
+          "use_example_image": "Use the included I AM ASLEEP example",
+          "baby_image_file": "Own notification image path (optional)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not sign in or discover frames. Check your app login and connection. Verification-code challenges and social-only sign-in are not supported.",
+      "setup_failed": "Check the size and connection mode. Wi-Fi/hybrid need retained login. A notification switch needs an example or own picture. Bluetooth setup also needs a valid frame key.",
+      "unknown": "Setup could not finish. No picture was sent. Try again or report a redacted error."
+    },
+    "abort": {
+      "already_configured": "This frame is already configured.",
+      "no_frames": "No supported art frame was found in this app account."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Notification and optional AI generation",
+        "description": "Cloudflare receives generation prompts using your account. Leave its fields empty to use uploaded photos only. Your token stays in Home Assistant.",
+        "data": {
+          "waterfall_entity": "Notification switch (blank disables)",
+          "baby_image_file": "Notification image path",
+          "cloudflare_account_id": "Cloudflare account ID (optional)",
+          "cloudflare_api_token": "Cloudflare Workers AI token (optional)"
+        }
+      }
+    }
+  }
+}
