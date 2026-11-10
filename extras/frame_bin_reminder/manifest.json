@@ -1,0 +1,10 @@
+{
+  "domain": "frame_bin_reminder",
+  "name": "Bin day art reminder",
+  "version": "0.7.0-beta.1",
+  "dependencies": [
+    "switchbot_frame_control"
+  ],
+  "codeowners": [],
+  "iot_class": "cloud_polling"
+}

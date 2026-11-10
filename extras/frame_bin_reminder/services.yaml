@@ -1,0 +1,49 @@
+refresh:
+  name: "Check council bin schedule"
+  description: "Check Erewash’s live published collection dates for tomorrow without changing the frame."
+test_picture:
+  name: "Test bin artwork"
+  description: "Show a bin artwork now, saving the current picture and restoring it automatically after ten minutes."
+  fields:
+    kind:
+      name: "Artwork"
+      required: true
+      selector:
+        select:
+          options:
+            - blue
+            - black
+            - none
+display_picture:
+  name: "Display bin artwork"
+  description: "Show bin artwork with persisted cleanup next Tuesday at 19:30, preserving any existing restoration record."
+  fields:
+    kind:
+      name: "Artwork"
+      required: true
+      selector:
+        select:
+          options:
+            - blue
+            - black
+            - none
+    restore_index:
+      name: "Original picture index"
+      description: "Required when the notification is already selected without a restoration record; must identify a different stored picture."
+      selector:
+        number:
+          min: 1
+          max: 255
+          mode: box
+restore:
+  name: "Restore previous frame picture"
+  description: "Restore the saved image, confirm device-local notification removal, then clear the restoration record."
+set_enabled:
+  name: "Enable scheduled bin artwork"
+  description: "Enable or disable Tuesday’s 16:00 bin display. Pending restoration still runs when disabled."
+  fields:
+    enabled:
+      name: "Enabled"
+      required: true
+      selector:
+        boolean:
