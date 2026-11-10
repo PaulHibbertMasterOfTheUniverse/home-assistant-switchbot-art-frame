@@ -46,7 +46,7 @@ The dashboard now includes **Home Assistant artwork gallery**. Upload or generat
 
 **Add bin artwork** imports the optional blue-bin, black-bin and no-collection pictures. Nothing is sent automatically. Each gallery item shows its ID for automations. Gallery pictures stay in your private HA configuration folder, outside public `www` hosting. Delivery still follows the destination's connection mode: gallery storage does not turn original-frame Wi-Fi uploads into a local network API.
 
-See [gallery actions](docs/GALLERY.md) and the optional [bin-day reminder setup](docs/BIN-REMINDER.md). The bin reminder restores the previous picture and verifies removal of its temporary device copy; it does not leave the bin in normal rotation.
+See [gallery actions](docs/GALLERY.md) and the optional [bin-day reminder setup](docs/BIN-REMINDER.md). Bin reminders default to off and can be enabled/disabled in the dashboard after optional configuration. The bin reminder restores the previous picture and verifies removal of its temporary device copy; it does not leave the bin in normal rotation.
 
 ## Notification picture / “baby asleep” example
 
