@@ -1,6 +1,7 @@
+// Release 20261109-recovery-layout: server layout is authoritative at send time.
 class FrameUploadCard extends HTMLElement {
   setConfig(config) { this.config=config; this.render(); }
-  set hass(hass) { this._hass=hass; if(!this.shadowRoot)this.render(); this.updateStatus(); if(!this.frames&&!this.loadingFrames&&!this.framesFailed)this.loadFrames(); }
+  set hass(hass) { this._hass=hass; if(!this.shadowRoot)this.render(); this.updateStatus(); if(!this.frames&&!this.loadingFrames&&!this.framesFailed)this.loadFrames(); if(!this.galleryLoaded&&!this.galleryLoading)this.loadGallery(); }
   getCardSize() { return 6; }
   render() {
     if(!this.shadowRoot)this.attachShadow({mode:'open'});
@@ -13,7 +14,8 @@ class FrameUploadCard extends HTMLElement {
       <label for="description">Describe a new picture</label><textarea id="description" maxlength="2048" placeholder="A cosy woodland cottage beneath a starry sky" aria-label="Picture description"></textarea><button class="generate">Generate picture</button><p class="generation" role="status" aria-live="polite"></p><p>Or upload a picture:</p><input type="file" accept="image/jpeg,image/png,image/webp" aria-label="Choose artwork">
       <div class="layout"><label for="orientation">Frame orientation</label><select id="orientation" aria-label="Frame orientation"><option value="landscape">Landscape — horizontal</option><option value="portrait">Portrait — vertical</option></select><button class="flip" aria-pressed="false">Rotate 180°</button></div><p class="orientation-note">Choose how the frame is standing. The preview shows the centre crop that will be sent.</p><img alt="Selected artwork preview"><button class="send" disabled>Send to frame</button>
       <div class="override-confirm" hidden role="alert"><p>The baby sleep picture is active. Replace it with this picture? The automation resumes when the waterfall switch changes again or you press Show baby asleep picture.</p><button class="override-cancel">Cancel</button> <button class="override-send">Send anyway</button></div>
-      <div class="replace-confirm" hidden role="alert"><p class="replace-details"></p><button class="replace-cancel">Keep existing pictures</button> <button class="replace-send">Replace oldest and send</button></div><p role="status" aria-live="polite" class="result"></p><p class="status"></p><button class="repair">Reconnect after reset</button> <button class="archive" hidden>Download last replaced picture</button><p class="repair-result" role="status" aria-live="polite"></p><p class="backup-download" hidden><a class="save-backup">Save backup JPEG</a></p></div></ha-card>`;
+      <div class="replace-confirm" hidden role="alert"><p class="replace-details"></p><button class="replace-cancel">Keep existing pictures</button> <button class="replace-send">Replace oldest and send</button></div><p role="status" aria-live="polite" class="result"></p><p class="status"></p><button class="repair">Reconnect after reset</button> <button class="archive" hidden>Download last replaced picture</button><p class="repair-result" role="status" aria-live="polite"></p><p class="backup-download" hidden><a class="save-backup">Save backup JPEG</a></p><section class="bin-controls" hidden><h3>Bin-day reminders</h3><button class="bin-toggle" aria-pressed="false">Enable bin reminders</button><p class="bin-status" role="status" aria-live="polite"></p></section><section class="gallery-section"><h3>Home Assistant artwork gallery</h3><p>Saved privately in Home Assistant. Choose artwork below, then press Send to frame. Automations can use each artwork ID.</p><label for="gallery-name">Artwork name</label><input id="gallery-name" type="text" maxlength="100" placeholder="Give this picture a name"><button class="gallery-save">Save current picture to gallery</button> <button class="gallery-refresh">Refresh gallery</button> <button class="gallery-import">Add bin artwork</button><p class="gallery-status" role="status" aria-live="polite"></p><div class="gallery-items" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px"></div></section></div></ha-card>`;
+    this.shadowRoot.querySelector('.bin-toggle').onclick=()=>this.toggleBinReminder();
     this.shadowRoot.querySelector('input').onchange=()=>this.loadFile();
     this.shadowRoot.querySelector('#orientation').onchange=()=>{this.rememberLayout();this.refreshPreview();};
     this.shadowRoot.querySelector('.flip').onclick=()=>{
@@ -36,7 +38,56 @@ class FrameUploadCard extends HTMLElement {
     this.shadowRoot.querySelector('.generate').onclick=()=>this.generate();
     for(const mode of ['local','hybrid','wifi'])this.shadowRoot.querySelector('.mode-'+mode).onclick=()=>this.setMode(mode);
     this.shadowRoot.querySelector('.archive').onclick=()=>this.downloadArchive();
-    this.shadowRoot.querySelector('.repair').onclick=()=>this.repair();this.updateStatus();
+    this.shadowRoot.querySelector('.repair').onclick=()=>this.repair();this.shadowRoot.querySelector('.gallery-save').onclick=()=>this.saveGallery();this.shadowRoot.querySelector('.gallery-refresh').onclick=()=>{this.galleryLoaded=false;this.loadGallery();};this.shadowRoot.querySelector('.gallery-import').onclick=()=>this.importBinArtwork();this.updateStatus();
+  }
+  async importBinArtwork(){
+    const status=this.shadowRoot.querySelector('.gallery-status');
+    try{await this._hass.callApi('POST','frame_art_gallery',{action:'import_bin_artwork'});await this.loadGallery();}
+    catch(error){status.textContent=error.body?.error||error.message||'Could not add bin artwork.';}
+  }
+  async loadGallery(){
+    if(!this._hass||this.galleryLoading)return;
+    this.galleryLoading=true;
+    const status=this.shadowRoot.querySelector('.gallery-status');
+    try{
+      const result=await this._hass.callApi('GET','frame_art_gallery');
+      const target=this.shadowRoot.querySelector('.gallery-items');target.replaceChildren();
+      for(const artwork of result.images){
+        const box=document.createElement('div'),button=document.createElement('button'),image=document.createElement('img'),label=document.createElement('span'),code=document.createElement('small');
+        image.src='data:image/jpeg;base64,'+artwork.thumbnail;image.alt=artwork.name;image.style.cssText='display:block;width:100%;height:110px;object-fit:contain;margin:0 0 8px';
+        label.textContent=artwork.name;button.append(image,label);button.style.width='100%';button.onclick=()=>this.chooseGallery(artwork);
+        code.textContent=artwork.id;code.style.cssText='display:block;overflow-wrap:anywhere;user-select:all;margin-top:6px';
+        box.append(button,code);target.append(box);
+      }
+      status.textContent=result.images.length?`${result.images.length} saved pictures. Automation action: frame_art_gallery.send_image.`:'Your gallery is empty. Upload or generate a picture, then save it here.';
+      this.galleryLoaded=true;
+    }catch(error){status.textContent=error.body?.error||error.message||'Could not load the gallery.';this.galleryLoaded=true;}
+    finally{this.galleryLoading=false;}
+  }
+  async saveGallery(){
+    const status=this.shadowRoot.querySelector('.gallery-status'),button=this.shadowRoot.querySelector('.gallery-save');
+    if(!this.sourceURL){status.textContent='Upload, generate or select a picture first.';return;}
+    button.disabled=true;status.textContent='Saving picture in Home Assistant…';
+    try{
+      const image=await this.decodeSource(),canvas=document.createElement('canvas');
+      canvas.width=image.naturalWidth||image.width;canvas.height=image.naturalHeight||image.height;
+      const scale=Math.min(1,2560/Math.max(canvas.width,canvas.height));canvas.width=Math.round(canvas.width*scale);canvas.height=Math.round(canvas.height*scale);
+      canvas.getContext('2d').drawImage(image,0,0,canvas.width,canvas.height);
+      const encoded=canvas.toDataURL('image/jpeg',0.92).split(',')[1];canvas.width=canvas.height=0;
+      const saved=await this._hass.callApi('POST','frame_art_gallery',{image:encoded,name:this.shadowRoot.querySelector('#gallery-name').value||'Saved artwork'});
+      await this.loadGallery();status.textContent='Saved locally. Artwork ID: '+saved.id;
+    }catch(error){status.textContent=error.body?.error||error.message||'Could not save the artwork.';}
+    finally{button.disabled=false;}
+  }
+  async chooseGallery(artwork){
+    const status=this.shadowRoot.querySelector('.gallery-status');status.textContent='Loading '+artwork.name+'…';
+    try{
+      const result=await this._hass.callApi('GET','frame_art_gallery/image/'+encodeURIComponent(artwork.id));
+      this.releaseDecodedSource();this.shadowRoot.querySelector('input[type=file]').value='';
+      this.generatedData=result.image;this.preparedSource=true;this.preparedBound=2560;this.sourceURL='data:image/jpeg;base64,'+result.image;
+      this.shadowRoot.querySelector('#gallery-name').value=artwork.name;await this.refreshPreview();
+      status.textContent=artwork.name+' selected. Press Send to frame. Automation artwork ID: '+artwork.id;
+    }catch(error){status.textContent=error.body?.error||error.message||'Could not load the artwork.';}
   }
   async loadFile(){
     const file=this.shadowRoot.querySelector('input').files[0],result=this.shadowRoot.querySelector('.result'),send=this.shadowRoot.querySelector('.send');
@@ -69,7 +120,10 @@ class FrameUploadCard extends HTMLElement {
     this.layouts[frame_id]=layout;this.savingLayout=true;const saveVersion=(this.layoutSaveVersion||0)+1;this.layoutSaveVersion=saveVersion;
     this.pendingLayoutSave=(this.pendingLayoutSave||Promise.resolve()).then(async()=>{
       try{
-        await this._hass.callApi('POST','switchbot_frame_control/frames',{frame_id,layout});
+        const response=await this._hass.callApi('POST','switchbot_frame_control/frames',{frame_id,layout,expected_revision:this.layoutRevisions?.[frame_id]||0});
+        this.layoutRevisions=this.layoutRevisions||{};
+        this.layoutRevisions[frame_id]=Math.max(this.layoutRevisions[frame_id]||0,response.layout_revision||0);
+        if(this.layoutWrites[frame_id]===layout){delete this.layoutWrites[frame_id];this.acceptLayout(frame_id,response.layout,response.layout_revision||0);}
         this.layoutSaveError=null;
       }catch(error){
         this.layoutSaveError=error.body?.error||error.message||'Could not save frame orientation';
@@ -83,12 +137,27 @@ class FrameUploadCard extends HTMLElement {
     this.shadowRoot.querySelector('#orientation').value=layout.orientation;this.flipped=layout.flipped;
     this.shadowRoot.querySelector('.flip').setAttribute('aria-pressed',String(this.flipped));
   }
+  acceptLayout(frame_id,layout,revision){
+    this.layoutRevisions=this.layoutRevisions||{};
+    if(revision<(this.layoutRevisions[frame_id]||0))return;
+    this.layoutRevisions[frame_id]=revision;this.layouts=this.layouts||{};this.layouts[frame_id]={...layout};
+    if(frame_id===this.selectedFrame)this.restoreLayout();
+  }
+  async syncLayout(frame_id){
+    // A card can remain open while a service or another browser saves layout.
+    // Do not rely on a delayed hass setter or the frame list cached at startup.
+    const response=await this._hass.callApi('GET','switchbot_frame_control/frames');
+    const frame=response.frames?.find(f=>f.id===frame_id);
+    if(!frame)throw new Error('Destination frame is no longer configured. Reload this dashboard.');
+    this.acceptLayout(frame_id,frame.layout,frame.layout_revision||0);
+    return {...this.layouts[frame_id]};
+  }
   targetFrame(){
     if(!this.frames?.some(f=>f.id===this.selectedFrame))throw new Error('Choose a configured destination frame first.');
     return this.selectedFrame;
   }
   setFrameControlsBusy(busy){
-    for(const selector of ['#frame','.repair','.show-baby','.restore-normal','.toggle-notification','.mode-local','.mode-hybrid','.mode-wifi'])this.shadowRoot.querySelector(selector).disabled=busy;
+    for(const selector of ['#frame','#orientation','.flip','input','.generate','.repair','.show-baby','.restore-normal','.toggle-notification','.mode-local','.mode-hybrid','.mode-wifi'])this.shadowRoot.querySelector(selector).disabled=busy;
   }
   async loadFrames(){
     this.loadingFrames=true;const status=this.shadowRoot.querySelector('.frame-result');
@@ -96,7 +165,8 @@ class FrameUploadCard extends HTMLElement {
       const response=await this._hass.callApi('GET','switchbot_frame_control/frames');
       if(!Array.isArray(response.frames)||!response.frames.length)throw new Error('No frames are configured.');
       this.frames=response.frames;
-      this.layouts=Object.fromEntries(this.frames.map(frame=>[frame.id,frame.layout||{orientation:'landscape',flipped:false}]));
+      this.layouts={};this.layoutRevisions={};
+      for(const frame of this.frames)this.acceptLayout(frame.id,frame.layout||{orientation:'landscape',flipped:false},frame.layout_revision||0);
       const select=this.shadowRoot.querySelector('#frame');select.replaceChildren();
       for(const frame of this.frames){const option=document.createElement('option');option.value=frame.id;option.textContent=frame.name;select.append(option);}
       const wanted=this.config.frame_id||this.selectedFrame||this.frames[0].id;
@@ -124,16 +194,32 @@ class FrameUploadCard extends HTMLElement {
     catch(error){status.textContent=error.message||'Could not update the selected frame.';}
     finally{this.setFrameControlsBusy(false);this.refreshPreview();}
   }
+  async toggleBinReminder(){
+    const sensor=this._hass.states?.['sensor.frame_bin_reminder_'+this.targetFrame()];
+    if(!sensor)throw new Error('Configure the optional bin reminder first.');
+    const button=this.shadowRoot.querySelector('.bin-toggle');button.disabled=true;
+    try{await this._hass.callService('frame_bin_reminder','set_enabled',{enabled:!sensor.attributes.enabled});}
+    catch(error){this.shadowRoot.querySelector('.bin-status').textContent=error.message||'Could not change bin reminders.';}
+    finally{button.disabled=false;}
+  }
   updateStatus(){
     if(!this.shadowRoot||!this._hass)return;
     const frame=this.frames?.find(f=>f.id===this.selectedFrame);
     this.shadowRoot.querySelector('.notification-controls').hidden=!frame;
     this.shadowRoot.querySelector('.show-baby').hidden=!frame?.notification_configured;
+    const bin=this._hass.states?.['sensor.frame_bin_reminder_'+this.selectedFrame];
+    this.shadowRoot.querySelector('.bin-controls').hidden=!bin;
+    const binToggle=this.shadowRoot.querySelector('.bin-toggle');
+    binToggle.textContent=bin?.attributes.enabled?'Disable bin reminders':'Enable bin reminders';
+    binToggle.setAttribute('aria-pressed',String(!!bin?.attributes.enabled));
+    this.shadowRoot.querySelector('.bin-status').textContent=bin?(bin.attributes.error||`Reminders ${bin.attributes.enabled?'on':'off'}. ${bin.attributes.restore_pending?'The active reminder will still be restored and cleared.':''}`):'';
     const state=frame?this._hass.states[frame.status_entity]:null;
     this.shadowRoot.querySelector('.archive').hidden=!state?.attributes?.archive_available;
     const savedLayout=state?.attributes?.layout;
-    if(savedLayout&&this.layoutWrites?.[this.selectedFrame]&&JSON.stringify(savedLayout)===JSON.stringify(this.layoutWrites[this.selectedFrame]))delete this.layoutWrites[this.selectedFrame];
-    if(savedLayout&&!this.layoutWrites?.[this.selectedFrame]&&!this.savingLayout&&!this.uploadTransport&&JSON.stringify(this.layouts?.[this.selectedFrame])!==JSON.stringify(savedLayout)){this.layouts=this.layouts||{};this.layouts[this.selectedFrame]=savedLayout;this.restoreLayout();this.refreshPreview();}
+    const savedRevision=state?.attributes?.layout_revision||0;
+    if(savedLayout&&!this.layoutWrites?.[this.selectedFrame]&&!this.savingLayout&&!this.uploadTransport&&savedRevision>(this.layoutRevisions?.[this.selectedFrame]||0)){
+      this.acceptLayout(this.selectedFrame,savedLayout,savedRevision);this.refreshPreview();
+    }
     const mode=state?.attributes?.connection_mode||'local';
     const labels={local:'Bluetooth only',hybrid:'Prefer Bluetooth; Wi-Fi/cloud when needed',wifi:'Wi-Fi only — uses SwitchBot cloud'};
     this.shadowRoot.querySelector('.connection-state').textContent=frame?`${frame.model==='frame1'?'Original AI Art Frame':'AI Art Frame 2'}${frame.panel_size?' · '+frame.panel_size+' inch':''} · ${labels[mode]||mode}`:'';
@@ -182,6 +268,7 @@ class FrameUploadCard extends HTMLElement {
     finally{clearInterval(progress);button.disabled=false;button.textContent='Generate picture';button.removeAttribute('aria-busy');}
   }
   async send(confirmed=false,replaceIndex=null){
+    if(this.uploadTransport)return;
     const file=this.shadowRoot.querySelector('input').files[0];
     if(!file&&!this.generatedData){this.shadowRoot.querySelector('.result').textContent='Choose a picture or generate one before sending.';return;}
     const result=this.shadowRoot.querySelector('.result'),button=this.shadowRoot.querySelector('.send');
@@ -198,11 +285,14 @@ class FrameUploadCard extends HTMLElement {
     try{
       await this.pendingLayoutSave;
       if(this.layoutSaveError)throw new Error(this.layoutSaveError);
+      const layout=await this.syncLayout(destination.id),source=this.sourceURL;
+      if(this.selectedFrame!==destination.id)throw new Error('Destination changed while preparing the picture; send again.');
       const prepared=await this.preparePicture();
+      if(this.sourceURL!==source||this.selectedFrame!==destination.id)throw new Error('Picture or destination changed while preparing; send again.');
       const data=prepared.transport.toDataURL('image/jpeg',0.92).split(',')[1];
       prepared.transport.width=prepared.transport.height=0;prepared.preview.width=prepared.preview.height=0;
       result.textContent=wifi?'Sending picture via Wi-Fi and SwitchBot cloud…':mode==='hybrid'?'Sending picture; checking Bluetooth or Wi-Fi/cloud delivery…':'Sending prepared picture over Bluetooth…';
-      const response=await this._hass.callApi('POST','switchbot_frame_control/upload',{image:data,override_baby:override,frame_id:destination.id,...(replaceIndex!==null?{replace_index:replaceIndex}:{})});
+      const response=await this._hass.callApi('POST','switchbot_frame_control/upload',{image:data,layout,override_baby:override,frame_id:destination.id,...(replaceIndex!==null?{replace_index:replaceIndex}:{})});
       result.textContent=response.local_storage_verified?'Picture stored and selected by the frame. Allow the screen to finish refreshing.':response.accepted?'SwitchBot accepted the Wi-Fi/cloud request. Delivery and physical screen are not yet verified.':'Please check the controller status.';
     }catch(error){
       result.textContent=error.body?.error||error.message||'Could not send the picture. Check the controller status.';
