@@ -22,9 +22,9 @@ def check():
     for path in files:
         rel=path.relative_to(ROOT)
         if len(rel.parts)==1 and rel.name not in ROOT_FILES:raise ValueError(f'Unexpected root file: {rel}')
-        if len(rel.parts)>1 and rel.parts[0] not in {'custom_components','docs','tests','tools','.github'}:raise ValueError(f'Unexpected directory: {rel}')
+        if len(rel.parts)>1 and rel.parts[0] not in {'custom_components','docs','tests','tools','.github','extras'}:raise ValueError(f'Unexpected directory: {rel}')
         if path.suffix=='.jpg':
-            if str(rel)!='custom_components/switchbot_frame_control/examples/baby-asleep.jpg':raise ValueError('Unexpected image')
+            if str(rel) not in {'custom_components/switchbot_frame_control/examples/'+name for name in ('baby-asleep.jpg','blue-bin.jpg','black-bin.jpg','none-bin.jpg')}:raise ValueError('Unexpected image')
             with Image.open(path) as image:
                 if image.getexif() or any(k in image.info for k in ('exif','comment','xmp','XML:com.adobe.xmp','icc_profile')):raise ValueError('Example photo contains metadata')
             continue
@@ -32,7 +32,7 @@ def check():
         text=path.read_text()
         if any(re.search(pattern,text) for pattern in PATTERNS):raise ValueError(f'Potential private data: {rel}')
         if path.suffix=='.json':json.loads(text)
-    print(f'Public-file and metadata checks passed: {len(files)} files; one approved example image.')
+    print(f'Public-file and metadata checks passed: {len(files)} files; approved example images only.')
     return files
 if __name__=='__main__':
     try:check()
