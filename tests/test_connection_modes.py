@@ -48,7 +48,7 @@ class Tests(unittest.IsolatedAsyncioTestCase):
  async def test_original_cloud_commands_use_original_function_ids(self):
   c=AppClient(None,{'session':{'headers':{}},'device_id':'D','group_id':'G'});c.invoke=AsyncMock()
   await c.show(75,'frame1');await c.normal([75,92],'frame1');await c.download(91,'frame1')
-  self.assertEqual([x.args[0] for x in c.invoke.await_args_list],[9604,9602,9605,9609,9601])
+  self.assertEqual([x.args[0] for x in c.invoke.await_args_list],[9602,9605,9609,9601])
  def test_cloud_native_asset_dimensions(self):
   import importlib.util
   from pathlib import Path

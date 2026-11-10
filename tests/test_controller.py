@@ -7,19 +7,22 @@ source=ROOT/'custom_components/switchbot_frame_control/__init__.py'
 protocol={};exec((source.parent/'protocol.py').read_text(),protocol)
 FrameError=protocol['FrameError'];AppClient=protocol['AppClient']
 class Store:
-    def __init__(self,*args):self.saved=[]
+    def __init__(self,*args,**kwargs):self.saved=[]
+    async def async_load(self):return json.loads(json.dumps(self.saved[-1])) if self.saved else None
     async def async_save(self,data):self.saved.append(json.loads(json.dumps(data)))
 class States:
     def __init__(self,on=False):self.on=on;self.published=[]
     def is_state(self,entity,state):return self.on==(state=='on')
     def async_set(self,*args):self.published.append(args)
 class Hass:
-    def __init__(self,on=False):self.states=States(on);self.services=types.SimpleNamespace(async_call=AsyncMock())
+    def __init__(self,on=False):self.data={};self.states=States(on);self.services=types.SimpleNamespace(async_call=AsyncMock())
     async def async_add_executor_job(self,func,*args):return func(*args)
 ns={'AsyncExitStack':__import__('contextlib').AsyncExitStack,'asyncio':asyncio,'base64':base64,'io':io,'json':json,'time':__import__('time'),'hashlib':__import__('hashlib'),
     'Image':Image,'ImageOps':ImageOps,'UnidentifiedImageError':UnidentifiedImageError,
     'FrameError':FrameError,'AppClient':lambda *args:None,'Store':Store,'callback':lambda f:f,
     'async_get_clientsession':lambda hass:None,'MAX_SOURCE_FILE':64*1024*1024,'MAX_FILE':8*1024*1024,'DOMAIN':'switchbot_frame_control'}
+recovery={'FrameError':FrameError,'asyncio':asyncio,'time':__import__('time'),'urlparse':__import__('urllib.parse',fromlist=['urlparse']).urlparse};exec((source.parent/'replacement.py').read_text().replace('from .protocol import FrameError',''),recovery)
+ns.update(Replacement=recovery['Replacement'],Path=Path,os=__import__('os'))
 tree=ast.parse(source.read_text());nodes=[n for n in tree.body if isinstance(n,(ast.FunctionDef,ast.ClassDef)) and n.name in ('prepare_source','jpeg_bytes','image_signature','signatures_match','Manager')]
 exec(compile(ast.Module(body=nodes,type_ignores=[]),str(source),'exec'),ns)
 Manager=ns['Manager']
