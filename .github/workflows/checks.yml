@@ -18,5 +18,6 @@ jobs:
       - run: node --check custom_components/switchbot_frame_control/frontend/frame-upload-card.js
       - run: node tests/test_card_memory.cjs
       - run: node tests/test_card_preparation.cjs
+      - run: node --test tests/test_card_layout.cjs
       - run: python tools/check_public.py
       - run: python tools/build_release.py
