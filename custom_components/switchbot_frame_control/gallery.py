@@ -70,7 +70,7 @@ class Gallery:
         raw=await self.hass.async_add_executor_job(self.path(image_id).read_bytes)
         layout=dict(manager.data.get('layout',{'orientation':'landscape','flipped':False}))
         transport=await self.hass.async_add_executor_job(prepare_transport,raw,layout,manager.config['panel_size'])
-        return await manager.upload(transport,override_baby=override)
+        return await manager.upload(transport,override_baby=override,expected_layout=layout)
 
 class GalleryView(HomeAssistantView):
     url='/api/frame_art_gallery';name='api:frame_art_gallery';requires_auth=True

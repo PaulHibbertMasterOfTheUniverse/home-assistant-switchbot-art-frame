@@ -1,3 +1,22 @@
+set_layout:
+  name: Set saved frame layout
+  description: Save this frame's orientation and 180-degree correction without sending or selecting artwork.
+  fields:
+    frame_id:
+      required: true
+      selector:
+        text:
+    orientation:
+      required: true
+      selector:
+        select:
+          options:
+            - landscape
+            - portrait
+    flipped:
+      required: true
+      selector:
+        boolean:
 show_baby:
   name: Show baby asleep picture
   description: Show the configured notification picture using the selected connection mode.

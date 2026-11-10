@@ -24,6 +24,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.storage import Store
 from .protocol import AppClient, FrameError
 from .native_image import panel_bytes
+from .replacement import Replacement
 
 DOMAIN='switchbot_frame_control'
 FRAME_SCHEMA=vol.Schema({
@@ -82,6 +83,7 @@ class FrameRegistry:
                  'width':{'7.3':800,'13.3':1600,'31.5':2560}[m.config.get('panel_size','7.3' if m.config.get('model')=='frame1' else '13.3')],
                  'height':{'7.3':480,'13.3':1200,'31.5':1440}[m.config.get('panel_size','7.3' if m.config.get('model')=='frame1' else '13.3')],
                  'layout':getattr(m,'data',{}).get('layout',{'orientation':'landscape','flipped':False}),
+                 'layout_revision':getattr(m,'data',{}).get('layout_revision',0),
                  'wifi_available':bool(m.config.get('credentials_file'))} for m in self.managers.values()]
 
 MAX_FILE=8*1024*1024
@@ -147,7 +149,7 @@ class Manager:
         self.entity_id=config.get('status_entity','sensor.main_frame_frame_control')
         self.client=AppClient(async_get_clientsession(hass),seed)
         self.lock=asyncio.Lock();self.tasks=set()
-        self.store=Store(hass,1,DOMAIN+'.'+seed['device_id'])
+        self.store=Store(hass,1,DOMAIN+'.'+seed['device_id'],atomic_writes=True)
         self.data={'baby_indices':[],'normal_indices':[],'pending':None,'manual_baby':False}
         self.error=None;self.status='ready';self.last_action='';self.source=''
         self.local_key=None
@@ -171,6 +173,9 @@ class Manager:
              'last_transfer':self.data.get('last_transfer',{}),
              'archive_available':bool(self.data.get('last_archived_art')),
              'layout':dict(self.data.get('layout',{'orientation':'landscape','flipped':False})),
+             'layout_revision':self.data.get('layout_revision',0),
+             'replacement':{key:self.data.get('pending_replacement',self.data.get('last_replacement',{})).get(key)
+                            for key in ('index','stage','started_at','updated_at','release_requests','cloud_delete_requests','cloud_sync_requests','events')},
              'display_confirmation':'Frame-reported mode' if self.last_storage_verified else 'Not physically verified'})
 
     def connection_mode(self):
@@ -199,13 +204,32 @@ class Manager:
         width=1 if self.config.get('model')=='frame1' else 2
         return len(value)>=2+width and value[0]==1 and value[1]==0 and int.from_bytes(value[2:2+width],'little')==index
 
-    async def set_layout(self,layout):
+    async def set_layout(self,layout,expected_revision=None):
         if not isinstance(layout,dict) or set(layout)!={'orientation','flipped'} or layout.get('orientation') not in ('landscape','portrait') or type(layout.get('flipped')) is not bool:
             raise FrameError('Choose landscape or portrait and a valid 180-degree setting')
         async with self.lock:
-            self.data['layout']=dict(layout);await self.save()
+            if expected_revision is not None and expected_revision!=self.data.get('layout_revision',0):
+                raise FrameError('Saved layout changed in another session. Reload this dashboard before saving orientation')
+            if self.data.get('layout')!=layout:
+                previous=self.data.get('layout');revision=self.data.get('layout_revision',0)
+                self.data['layout']=dict(layout)
+                self.data['layout_revision']=revision+1
+                try:await self.save_verified()
+                except Exception:
+                    if previous is None:self.data.pop('layout',None)
+                    else:self.data['layout']=previous
+                    self.data['layout_revision']=revision
+                    raise
             self.publish(error=self.error)
         return self.data['layout']
+
+    def protected_indices(self):
+        indices=set(self.data['baby_indices'])
+        reminder=self.hass.data.get('frame_bin_reminder')
+        if reminder is not None and getattr(reminder,'manager',None) is self:
+            index=reminder.data.get('slot',{}).get('index')
+            if type(index) is int:indices.add(index)
+        return indices
 
     async def oldest_stored(self,state):
         stored=state.get('9606',{}).get('value')
@@ -215,7 +239,7 @@ class Manager:
         items=await self.client.catalogue()
         if len(stored)<10 and len(items)<10:return None
         items={i['imageIndex']:i for i in items if i.get('imageIndex') in stored}
-        eligible=stored-set(self.data['baby_indices'])
+        eligible=stored-self.protected_indices()
         if not eligible:raise FrameError('No replaceable stored artwork was found')
         try:
             oldest=min(eligible,key=lambda i:(int(items[i]['createdAt']),i))
@@ -225,33 +249,18 @@ class Manager:
             raise FrameError('Cannot establish the oldest stored picture; nothing was removed') from None
         return {'index':oldest,'created_at':created}
 
-    async def replace_oldest(self,index):
+    async def replace_oldest(self,index,digest):
         if self.config.get('model')!='frame1' or self.connection_mode()=='local':
             raise FrameError('Oldest-picture replacement is available for original frames using Wi-Fi')
-        if self.data.get('pending_cloud_registration'):
-            raise FrameError('Resolve the pending upload before replacing a picture; nothing was removed')
-        candidate=await self.oldest_stored(await self.client.reported_state())
-        if candidate is None:return  # Space was freed since the confirmation.
-        if type(index) is not int or candidate['index']!=index:
-            raise FrameError('The oldest stored picture has changed. Send again to review the new replacement; nothing was removed')
-        items=await self.client.catalogue()
-        archive_cloud=len(items)>=10
-        if archive_cloud:await self.archive_cloud_art(index,items)
-        self.last_action=f'Replacing stored picture {index}; '+('a private Home Assistant backup is saved' if archive_cloud else 'its cloud copy is retained')
-        self.last_transport='SwitchBot cloud / Wi-Fi';self.publish('replacing_oldest')
-        await self.client.invoke(9601,{'0':2,'1':index})
-        if archive_cloud:
-            await self.client.post('/device/artframe/api/v1/images/delete',{'deviceID':self.client.device,'groupID':self.client.group,'imageIndexList':[index],'deleteAll':False})
-            await self.client.post('/productbiz/v1/slideshow/syncDeletedImages',{'deviceID':self.client.device,'groupID':self.client.group,'imageIndexes':[index],'deleteAll':False})
-            if index in {i['imageIndex'] for i in await self.client.catalogue()}:raise FrameError('Cloud removal not confirmed. The private backup is saved; no new picture was registered')
-            self.data['cloud_art_uploads']={key:value for key,value in self.data.get('cloud_art_uploads',{}).items() if value!=index}
-        for attempt in range(40):
-            state=await self.client.reported_state();stored=state.get('9606',{}).get('value')
-            if isinstance(stored,list) and index not in stored:
-                self.data['normal_indices']=[i for i in self.data['normal_indices'] if i!=index]
-                self.data['last_replaced_image']=candidate;await self.save();return
-            await asyncio.sleep(3)
-        raise FrameError('Frame has not confirmed the free space. No new picture was registered; '+('the private Home Assistant backup is saved' if archive_cloud else 'the old cloud copy is retained'))
+        await Replacement(self).prepare(index,digest)
+
+    async def verify_replacement_backup(self,item):
+        if not isinstance(item,dict) or not isinstance(item.get('name'),str) or Path(item['name']).name!=item['name']:
+            raise FrameError('Replacement backup metadata is invalid; nothing was removed')
+        path=Path(self.hass.config.path('frame_art_archive',self.frame_id,item['name']))
+        content=await self.hass.async_add_executor_job(path.read_bytes)
+        if hashlib.sha256(content).hexdigest()!=item.get('sha256'):
+            raise FrameError('Replacement backup verification failed; nothing was removed')
 
     async def archive_cloud_art(self,index,items):
         item=next((i for i in items if i.get('imageIndex')==index),None)
@@ -290,10 +299,12 @@ class Manager:
         # additional cloud entry merely because the response was lost.
         digest=hashlib.sha256(content).hexdigest()
         ledger=self.data.setdefault('cloud_art_uploads',{})
-        if digest in ledger:return self.check_index(ledger[digest])
+        if digest in ledger:
+            index=self.check_index(ledger[digest]);await Replacement(self).complete(digest,index);return index
         if self.data.get('pending_cloud_registration'):
             raise FrameError('An earlier cloud registration has an uncertain result; reconcile it before adding another image')
         if not self.config.get('credentials_file'):raise FrameError('SwitchBot Wi-Fi/cloud credentials are not configured')
+        if self.data.get('pending_replacement'):await Replacement(self).check_ready(digest)
         if self.config.get('model')=='frame1' and self.connection_mode()!='wifi':
             # Check device capacity locally when available; check the cloud album below too.
             count=None
@@ -314,7 +325,12 @@ class Manager:
         from .native_image import cloud_assets
         assets=await self.hass.async_add_executor_job(cloud_assets,content,self.config.get('model','frame2'),self.config.get('panel_size'))
         names=await self.client.upload_assets(assets)
-        self.data['pending_cloud_registration']={'sha256':digest,'files':names};await self.save()
+        # Asset PUTs do not consume album slots. Recheck both capacities after
+        # they finish and immediately before an irreversible registration.
+        if self.data.get('pending_replacement'):await Replacement(self).check_ready(digest)
+        self.data['pending_cloud_registration']={'sha256':digest,'files':names}
+        if self.data.get('pending_replacement'):await self.save_verified()
+        else:await self.save()
         try:
             index=self.check_index(await self.client.register_image(names))
         except FrameError as error:
@@ -334,6 +350,7 @@ class Manager:
                 else:raise error
             else:raise
         ledger[digest]=index;self.data.pop('pending_cloud_registration',None);await self.save()
+        await Replacement(self).complete(digest,index)
         return index
 
     async def deliver_cloud_art(self,content):
@@ -404,6 +421,14 @@ class Manager:
             self.publish('registration_reconciled')
 
     async def save(self): await self.store.async_save(self.data)
+
+    async def save_verified(self):
+        # Store.async_save logs some disk errors without raising. Read back via
+        # the supported Store API before allowing replacement/layout mutation.
+        expected=json.loads(json.dumps(self.data))
+        await self.save()
+        if await self.store.async_load()!=expected:
+            raise FrameError('Controller state persistence was not verified; no further frame mutation was attempted')
 
     def waterfall_on(self):
         entity=self.config.get('waterfall_entity')
@@ -681,8 +706,10 @@ class Manager:
         await self.save()
         return index
 
-    async def upload(self,raw,override_baby=False,replace_index=None):
+    async def upload(self,raw,override_baby=False,replace_index=None,expected_layout=None):
         async with self.lock:
+            if expected_layout is not None and expected_layout!=self.data.get('layout',{'orientation':'landscape','flipped':False}):
+                raise FrameError('Saved frame layout changed. Refresh the preview and send again; nothing was removed')
             if self.desired() and not override_baby:raise FrameError('The baby picture is active. Confirm replacement in the dashboard to send this picture anyway')
             override_applied=bool(override_baby and self.desired())
             if override_applied:
@@ -690,7 +717,12 @@ class Manager:
             self.publish('uploading')
             try:
                 content=await self.hass.async_add_executor_job(jpeg_bytes,raw)
-                if replace_index is not None:await self.replace_oldest(replace_index)
+                digest=hashlib.sha256(content).hexdigest()
+                pending=self.data.get('pending_replacement')
+                if pending and (pending['sha256']!=digest or replace_index not in (None,pending['index'])):
+                    raise FrameError('A different replacement is pending; resume the same picture without choosing another artwork')
+                if pending:replace_index=pending['index']
+                if replace_index is not None:await self.replace_oldest(replace_index,digest)
                 if self.connection_mode()=='wifi' or self.config.get('model')=='frame1':
                     if self.connection_mode()=='local':raise FrameError('New images on the original frame require Wi-Fi/cloud; local mode can select stored images only')
                     return await self.deliver_cloud_art(content)
@@ -734,7 +766,11 @@ class FramesView(HomeAssistantView):
             value=await request.json()
             if not isinstance(value,dict):raise FrameError('Invalid frame preference')
             manager=self.registry.select(value.get('frame_id'))
-            return web.json_response({'layout':await manager.set_layout(value.get('layout'))})
+            revision=value.get('expected_revision')
+            if type(revision) is not int or revision<0:
+                raise FrameError('Reload this dashboard before saving frame orientation')
+            layout=await manager.set_layout(value.get('layout'),expected_revision=revision)
+            return web.json_response({'layout':layout,'layout_revision':manager.data.get('layout_revision',0)})
         except (FrameError,ValueError) as error:
             return web.json_response({'error':str(error)},status=400)
 
@@ -790,7 +826,10 @@ class UploadView(HomeAssistantView):
             encoded=value.get('image','')
             if not isinstance(encoded,str) or len(encoded)>MAX_FILE*4//3+4:raise FrameError('Choose an image smaller than 8 MB')
             raw=base64.b64decode(encoded,validate=True)
-            return web.json_response(await manager.upload(raw,override_baby=value.get('override_baby') is True,replace_index=value.get('replace_index')))
+            layout=value.get('layout')
+            if not isinstance(layout,dict) or set(layout)!={'orientation','flipped'} or layout.get('orientation') not in ('portrait','landscape') or type(layout.get('flipped')) is not bool:
+                raise FrameError('Reload this dashboard to use the saved frame layout before sending; nothing was removed')
+            return web.json_response(await manager.upload(raw,override_baby=value.get('override_baby') is True,replace_index=value.get('replace_index'),expected_layout=layout))
         except (FrameError,binascii.Error,ValueError) as error:
             if manager:await manager.report_failure(error)
             return web.json_response({'error':str(error) if isinstance(error,FrameError) else 'Invalid image upload',**({'replacement':error.replacement} if getattr(error,'replacement',None) else {})},status=409 if getattr(error,'replacement',None) else 400)
@@ -863,6 +902,12 @@ async def async_setup(hass,config):
     async def repair(call):await target(call).repair_connection()
     async def backup_picture(call):await target(call).backup_current_picture()
     async def set_mode(call):await target(call).set_connection_mode(call.data['mode'])
+    async def set_layout(call):
+        try:await target(call).set_layout({'orientation':call.data['orientation'],'flipped':call.data['flipped']})
+        except FrameError as error:raise HomeAssistantError(str(error)) from None
+    hass.services.async_register(DOMAIN,'set_layout',set_layout,schema=vol.Schema({
+        vol.Required('frame_id'):cv.slug,vol.Required('orientation'):vol.In(['landscape','portrait']),
+        vol.Required('flipped'):cv.boolean}))
     async def select_image(call):
         try:await target(call).select_image(call.data['index'])
         except FrameError as error:raise HomeAssistantError(str(error)) from None
