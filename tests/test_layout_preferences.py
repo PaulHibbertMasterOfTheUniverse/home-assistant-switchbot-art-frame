@@ -20,8 +20,9 @@ class Tests(unittest.IsolatedAsyncioTestCase):
  async def test_preferences_endpoint_is_admin_only_and_targets_selected_frame(self):
   env=environment();a=manager();b=manager();a.set_layout=AsyncMock();b.set_layout=AsyncMock(return_value={'orientation':'landscape','flipped':True})
   view=env['FramesView'](env['FrameRegistry'](None,{'one':a,'two':b}))
-  payload={'frame_id':'two','layout':{'orientation':'landscape','flipped':True}}
+  b.data={}
+  payload={'frame_id':'two','expected_revision':0,'layout':{'orientation':'landscape','flipped':True}}
   self.assertEqual((await view.post(Request(payload,False))).status,403)
   a.set_layout.assert_not_awaited();b.set_layout.assert_not_awaited()
   result=await view.post(Request(payload));self.assertEqual(result.status,200)
-  b.set_layout.assert_awaited_once_with(payload['layout']);a.set_layout.assert_not_awaited()
+  b.set_layout.assert_awaited_once_with(payload['layout'],expected_revision=0);a.set_layout.assert_not_awaited()

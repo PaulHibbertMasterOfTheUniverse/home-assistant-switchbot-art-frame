@@ -60,7 +60,8 @@ class HomeAssistantSetupTests(unittest.IsolatedAsyncioTestCase):
   http=SimpleNamespace(register_view=registered.append,async_register_static_paths=AsyncMock())
   with patch.object(self.hass,'http',http,create=True),patch('homeassistant.components.frontend.add_extra_js_url') as add_js:
    self.assertTrue(await integration.async_setup(self.hass,{}))
-  self.assertEqual(len(registered),5)
+  self.assertEqual(len(registered),7)
+  self.assertTrue(self.hass.services.has_service('frame_art_gallery','send_image'))
   self.assertTrue(self.hass.services.has_service('switchbot_frame_control','select_image'))
   self.assertTrue(self.hass.services.has_service('switchbot_frame_control','show_baby'))
   http.async_register_static_paths.assert_awaited_once();add_js.assert_called_once()

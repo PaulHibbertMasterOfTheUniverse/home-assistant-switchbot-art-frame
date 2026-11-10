@@ -20,8 +20,8 @@ class Vol:
  @staticmethod
  def Schema(v):return v
 class Store:
- def __init__(self,hass,version,key):self.key=key;self.saved=[]
- async def async_load(self):return None
+ def __init__(self,hass,version,key,**kwargs):self.key=key;self.saved=[]
+ async def async_load(self):return json.loads(json.dumps(self.saved[-1])) if self.saved else None
  async def async_save(self,data):self.saved.append(json.loads(json.dumps(data)))
 class States:
  def __init__(self):self.values={};self.published={}
@@ -40,7 +40,7 @@ class Hass:
 def environment():
  env=dict(ns);env.update({'Path':Path,'Store':Store,'web':web,'HomeAssistantView':View,'HomeAssistantError':ServiceError,
    'vol':Vol,'cv':types.SimpleNamespace(slug=str,boolean=bool),'binascii':__import__('binascii'),'EVENT_HOMEASSISTANT_STARTED':'started',
-   'AppClient':lambda http,seed:types.SimpleNamespace(device=seed['device_id']),
+   'cv':types.SimpleNamespace(slug=str,boolean=bool,string=str),'AppClient':lambda http,seed:types.SimpleNamespace(device=seed['device_id']),
    'async_track_state_change_event':lambda h,e,fn:h.listeners.append((e,fn)), '__package__':'frame_test'})
  tree=ast.parse(source.read_text());names={'frame_configs','FrameRegistry','FramesView','PrepareView','ArchiveView','UploadView','load_manager','async_setup','Manager'}
  nodes=[n for n in tree.body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef)) and n.name in names]
@@ -59,9 +59,11 @@ class Tests(unittest.IsolatedAsyncioTestCase):
     Path(root,fid+'.json').write_text(json.dumps({'device_id':mac,'communication_key':{'key':fid}}))
     settings['frames'].append({'id':fid,'device_id':mac,'local_key_file':fid+'.json','waterfall_entity':'switch.'+fid})
    fake=types.ModuleType('frame_test.generation');fake.GenerateView=lambda registry:object()
+   gallery=types.ModuleType('frame_test.gallery');gallery.async_setup=AsyncMock(return_value=True);sys.modules['frame_test.gallery']=gallery
    old=sys.modules.get('frame_test.generation');sys.modules['frame_test.generation']=fake
    try:await env['async_setup'](h,{'switchbot_frame_control':settings})
    finally:
+    sys.modules.pop('frame_test.gallery',None)
     if old is None:sys.modules.pop('frame_test.generation',None)
     else:sys.modules['frame_test.generation']=old
    registry=h.data['switchbot_frame_control'];a=registry.select('main_frame');b=registry.select('studio')
@@ -83,8 +85,8 @@ class Tests(unittest.IsolatedAsyncioTestCase):
  async def test_http_upload_routes_only_selected_frame(self):
   env=environment();a=types.SimpleNamespace(upload=AsyncMock(return_value={'sent':True}));b=types.SimpleNamespace(upload=AsyncMock(return_value={'sent':True}))
   view=env['UploadView'](env['FrameRegistry'](None,{'one':a,'two':b}))
-  r=await view.post(Request({'frame_id':'two','image':base64.b64encode(picture()).decode(),'override_baby':True}))
-  self.assertEqual(r.status,200);a.upload.assert_not_awaited();b.upload.assert_awaited_once_with(picture(),override_baby=True,replace_index=None)
+  r=await view.post(Request({'frame_id':'two','image':base64.b64encode(picture()).decode(),'override_baby':True,'layout':{'orientation':'portrait','flipped':True}}))
+  self.assertEqual(r.status,200);a.upload.assert_not_awaited();b.upload.assert_awaited_once_with(picture(),override_baby=True,replace_index=None,expected_layout={'orientation':'portrait','flipped':True})
  async def test_admin_required_and_list_contains_no_private_keys(self):
   env=environment();m=types.SimpleNamespace(frame_id='one',name='One',entity_id='sensor.one',config={},local_key={'secret':'not public'})
   view=env['FramesView'](env['FrameRegistry'](None,{'one':m}))
