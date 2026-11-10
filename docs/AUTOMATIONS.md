@@ -35,3 +35,7 @@ With multiple frames, include `frame_id` explicitly. Omitted or unknown destinat
 For automatic notification behaviour, selecting the switch in setup is sufficient: its on/off changes are observed by the integration. You do not need a second automation that repeatedly uploads the same file. In local operation the notification is retained once and excluded from the normal playlist.
 
 To use your own picture, save it inside the HA configuration folder and configure its relative path, for example `frame-images/notification.jpg`. Keep personal photos outside `www` unless you intentionally want public hosting. The included example can be selected during setup without copying files.
+
+## Gallery and bin reminders
+
+Use `frame_art_gallery.send_image` with explicit `frame_id` and `image_id` to send saved artwork. See [gallery setup](GALLERY.md). The optional [bin reminder](BIN-REMINDER.md) includes a collection-calendar/Erewash source, reusable notification slot and verified restore-and-purge cleanup.

@@ -23,3 +23,5 @@ Original uploads are streamed to Home Assistant for resizing. Normal image prepa
 Endpoints for upload, preparation, generation and backup require an authenticated Home Assistant administrator. No public image-hosting URL is required for this release. The package contains no user account, captured session, real device identifier or home address. The sole personal-image exception is the opt-in baby-asleep example supplied with the publisher's permission; its JPEG metadata has been removed.
 
 Do not post passwords, session tokens, communication keys, account files or unredacted HA backups in issues or support chats.
+
+Gallery files and pending bin-restoration records stay in your own HA configuration. This release includes no household configuration, collection address/UPRN, real frame ID or saved session. The optional Erewash source sends the UPRN you configure to the council; a calendar source queries your chosen HA calendar. Bin delivery for the original frame sends artwork through SwitchBot cloud.
