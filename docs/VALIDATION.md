@@ -39,3 +39,9 @@ The production blue-bin send was physically confirmed complete and correctly ori
 The optional component is in `extras/frame_bin_reminder` to preserve one main integration under `custom_components/` for HACS. Copy that extra folder manually as documented. No live Home Assistant configuration or restart was performed while packaging this release.
 
 The 10 November public package also includes persisted same-slot replacement recovery and saved-layout revision guards from the live repair. Dedicated regression tests cover delayed release, restart resumption, duplicate prevention and stale browser layout. Dashboard tests cover the optional bin reminder enable/disable control. The public package itself has not replaced the household development installation.
+
+## 0.7.1-beta.1 cleanup queue
+
+The public port carries the installed upload-first library and queue repair, adapted to explicit per-frame opt-in for the original 31.5-inch Wi-Fi profile. Regression coverage includes a real controller/gallery entry with mocked network, stale awaiting-absence state, multiple cleanup intentions, lost replies, failed persistence, identity reuse, full capacity, restart and cancellation, plus public HA service registration/lifecycle. Live development recovery confirmed a stale already-absent target without further deletion; a new physical upload was not exercised for this port. The public first-run collection migration remains deferred.
+
+Release checks: 345 Python tests passed, including real HA setup/service routing and unloading an active cleanup worker. All 13 dashboard layout tests, both image preparation/memory suites, frontend syntax and public-file/image-metadata checks passed.

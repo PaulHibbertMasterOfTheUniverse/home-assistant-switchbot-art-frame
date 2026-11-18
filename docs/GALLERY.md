@@ -21,3 +21,5 @@ This action uses the destination's saved portrait/landscape and 180° setting. I
 Images and `index.json` are saved under `frame_art_gallery/` inside your HA configuration directory. Back up this directory privately. The gallery HTTP endpoints require an authenticated HA administrator; pictures are not put in `www`, exposed on a public URL, or sent anywhere merely by saving them. Sending to an original frame uses SwitchBot's cloud; Frame 2 Bluetooth-only delivery stays local after setup.
 
 The gallery is not a playlist synchroniser: selecting/sending a gallery picture adds or reuses frame storage according to the main uploader. The separate bin reminder owns one reusable notification slot and cleans up its device copy after restoring your previous artwork.
+
+With [upload-first library mode](LIBRARY.md) explicitly enabled on a supported frame, eligible previous pictures are archived here before background removal from the frame/cloud. Exact archived transport bytes are retained privately, with checksum checks and layout provenance; this is separate from saving an ordinary uploaded source.
