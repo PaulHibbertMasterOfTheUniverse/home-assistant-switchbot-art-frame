@@ -65,3 +65,48 @@ class HomeAssistantSetupTests(unittest.IsolatedAsyncioTestCase):
   self.assertTrue(self.hass.services.has_service('switchbot_frame_control','select_image'))
   self.assertTrue(self.hass.services.has_service('switchbot_frame_control','show_baby'))
   http.async_register_static_paths.assert_awaited_once();add_js.assert_called_once()
+
+ async def test_library_actions_register_and_require_explicit_destination(self):
+  import custom_components.switchbot_frame_control as integration
+  from homeassistant.exceptions import HomeAssistantError
+  registered=[]
+  http=SimpleNamespace(register_view=registered.append,async_register_static_paths=AsyncMock())
+  with patch.object(self.hass,'http',http,create=True),patch('homeassistant.components.frontend.add_extra_js_url'):
+   await integration.async_setup(self.hass,{})
+  manager=SimpleNamespace(lock=asyncio.Lock(),publish=lambda **kwargs:None,error=None)
+  self.hass.data[integration.DOMAIN].managers['example_frame']=manager
+  for name in ('inspect_library','backup_library','set_library_mode','retry_library_cleanup','resume_library_delivery'):
+   self.assertTrue(self.hass.services.has_service(integration.DOMAIN,name))
+  inspect=AsyncMock(return_value={'cleanup_pending':False,'spare_capacity':6})
+  with patch.object(integration.Library,'inspect',inspect):
+   result=await self.hass.services.async_call(integration.DOMAIN,'inspect_library',{'frame_id':'example_frame'},blocking=True,return_response=True)
+   self.assertEqual(result['spare_capacity'],6);inspect.assert_awaited_once()
+   with self.assertRaises(HomeAssistantError):
+    await self.hass.services.async_call(integration.DOMAIN,'inspect_library',{'frame_id':'unknown_frame'},blocking=True,return_response=True)
+  enable=AsyncMock(return_value={'enabled':True})
+  with patch.object(integration.Library,'set_enabled',enable):
+   await self.hass.services.async_call(integration.DOMAIN,'set_library_mode',{'frame_id':'example_frame','enabled':True},blocking=True,return_response=True)
+  enable.assert_awaited_once_with(True,[],None)
+
+ async def test_entry_unload_cancels_background_library_worker(self):
+  import custom_components.switchbot_frame_control as integration
+  from homeassistant.core import CoreState
+  from homeassistant.helpers.storage import Store
+  entry=ConfigEntry(version=1,minor_version=1,domain=integration.DOMAIN,title='Example',source='user',unique_id='AABBCCDDEE02',options={},discovery_keys={},subentries_data=[],data={
+   'settings':{'id':'example_library','device_id':'AABBCCDDEE02','model':'frame1','panel_size':'31.5','connection_mode':'wifi','local_key_file':'unused.json','credentials_file':'config_entry'},
+   'seed':{'device_id':'AABBCCDDEE02','group_id':'example','session':{'headers':{}}}})
+  self.hass.data[integration.DOMAIN]=integration.FrameRegistry(self.hass,{})
+  self.hass.state=CoreState.running
+  started=asyncio.Event();cancelled=asyncio.Event()
+  async def cleanup(_):
+   started.set()
+   try:await asyncio.Future()
+   finally:cancelled.set()
+  saved={'library_mode':True,'library_cleanup_queue':[{'stage':'awaiting_absence'}]}
+  with patch.object(integration,'async_get_clientsession',return_value=None),patch.object(Store,'async_load',AsyncMock(return_value=saved)),patch.object(integration.Library,'cleanup',cleanup):
+   await integration.async_setup_entry(self.hass,entry)
+   await asyncio.wait_for(started.wait(),1)
+   worker=entry.runtime_data.library_cleanup_task
+   await integration.async_unload_entry(self.hass,entry)
+   self.assertTrue(worker.cancelled());self.assertTrue(cancelled.is_set())
+   self.assertTrue(entry.runtime_data.data['library_cleanup_queue'])

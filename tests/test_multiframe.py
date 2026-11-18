@@ -10,6 +10,10 @@ class View:pass
 class ServiceError(Exception):pass
 class Vol:
  @staticmethod
+ def All(*args,**kwargs):return args[0]
+ @staticmethod
+ def Range(**kwargs):return int
+ @staticmethod
  def Optional(v,**kwargs):return v
  @staticmethod
  def Required(v):return v
@@ -39,8 +43,8 @@ class Hass:
 
 def environment():
  env=dict(ns);env.update({'Path':Path,'Store':Store,'web':web,'HomeAssistantView':View,'HomeAssistantError':ServiceError,
-   'vol':Vol,'cv':types.SimpleNamespace(slug=str,boolean=bool),'binascii':__import__('binascii'),'EVENT_HOMEASSISTANT_STARTED':'started',
-   'cv':types.SimpleNamespace(slug=str,boolean=bool,string=str),'AppClient':lambda http,seed:types.SimpleNamespace(device=seed['device_id']),
+   'SupportsResponse':types.SimpleNamespace(OPTIONAL=1),'vol':Vol,'cv':types.SimpleNamespace(slug=str,boolean=bool),'binascii':__import__('binascii'),'EVENT_HOMEASSISTANT_STARTED':'started',
+   'cv':types.SimpleNamespace(slug=str,boolean=bool,string=str,ensure_list=list),'AppClient':lambda http,seed:types.SimpleNamespace(device=seed['device_id']),
    'async_track_state_change_event':lambda h,e,fn:h.listeners.append((e,fn)), '__package__':'frame_test'})
  tree=ast.parse(source.read_text());names={'frame_configs','FrameRegistry','FramesView','PrepareView','ArchiveView','UploadView','load_manager','async_setup','Manager'}
  nodes=[n for n in tree.body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef)) and n.name in names]

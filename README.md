@@ -81,3 +81,7 @@ If you retain cloud sign-in, HA stores the account connection in its configurati
 - [Contributing](CONTRIBUTING.md)
 
 Source code is MIT licensed, with required third-party notices. The optional example photo has separate terms in `custom_components/switchbot_frame_control/examples/README.md`.
+
+## Optional upload-first library
+
+Version 0.7.1-beta.1 adds opt-in upload-first/background cleanup for original 31.5-inch Wi-Fi frames. Existing collections are not automatically purged. Read the backup, removal and recovery details in [the library guide](docs/LIBRARY.md) before enabling it.

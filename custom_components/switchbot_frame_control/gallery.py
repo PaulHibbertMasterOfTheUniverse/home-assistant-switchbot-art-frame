@@ -45,6 +45,72 @@ class Gallery:
     def read_index(self):
         p=self.root/'index.json'
         return json.loads(p.read_text()) if p.exists() else {}
+    @staticmethod
+    def write_private(path,raw):
+        path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+        temporary=path.with_suffix(path.suffix+'.tmp')
+        with temporary.open('wb') as file:
+            os.chmod(temporary,0o600);file.write(raw);file.flush();os.fsync(file.fileno())
+        os.replace(temporary,path)
+        descriptor=os.open(path.parent,os.O_RDONLY)
+        try:os.fsync(descriptor)
+        finally:os.close(descriptor)
+
+    def import_transport(self,raw,frame_id,layout,panel_size,metadata,known_layout=False):
+        """Keep exact cloud/upload JPEG, plus a reversible gallery presentation.
+
+        Old cloud JPEGs are already prepared transports, NOT camera originals.
+        Their historic mounting calibration is unknown; never label inferred
+        gallery orientation as historically verified. Exact bytes remain intact.
+        """
+        digest=hashlib.sha256(raw).hexdigest()
+        for existing_id,item in self.read_index().items():
+            if digest in (item.get('original_sha256'),item.get('archived_original_sha256')):
+                if self.verify_transport(existing_id)==raw:return existing_id
+        recipe=json.dumps([frame_id,layout,panel_size],sort_keys=True).encode()
+        image_id='transport_'+hashlib.sha256(raw+recipe).hexdigest()[:24]
+        with Image.open(io.BytesIO(raw)) as image:
+            if image.format!='JPEG' or image.width*image.height>40_000_000:raise ValueError('Invalid transport JPEG')
+            image.load();image=image.convert('RGB')
+            if layout['orientation']=='portrait':image=image.transpose(Image.Transpose.ROTATE_270)
+            if layout['flipped']:image=image.transpose(Image.Transpose.ROTATE_180)
+            output=io.BytesIO();image.save(output,'PNG');presentation=output.getvalue()
+        self.root.mkdir(parents=True,exist_ok=True,mode=0o700)
+        original=self.root/'originals'/(digest+'.jpg')
+        if original.exists() and original.read_bytes()!=raw:raise ValueError('Archive collision')
+        if not original.exists():self.write_private(original,raw)
+        if original.read_bytes()!=raw:raise ValueError('Exact original readback failed')
+        self.write_private(self.path(image_id),presentation)
+        index=self.read_index();previous=index.get(image_id,{})
+        origins=list(previous.get('origins',[]))
+        if metadata not in origins:origins.append(metadata)
+        index[image_id]={'name':previous.get('name','Imported frame artwork'),
+            'saved_at':previous.get('saved_at',datetime.now(timezone.utc).isoformat()),
+            'source_kind':'transport_archive','original_sha256':digest,
+            'presentation_sha256':hashlib.sha256(presentation).hexdigest(),
+            'frame_id':frame_id,'layout_at_archive':dict(layout),'panel_size':panel_size,
+            'orientation_provenance':'known_upload_layout' if known_layout else 'historic_layout_unknown_current_layout_used_for_preview',
+            'origins':origins}
+        self.write_private(self.root/'index.json',json.dumps(index).encode())
+        self.verify_transport(image_id)
+        return image_id
+
+    def verify_transport(self,image_id):
+        item=self.read_index()[image_id]
+        digest=item.get('original_sha256',item.get('archived_original_sha256'))
+        if not re.fullmatch(r'[a-f0-9]{64}',digest):raise ValueError('Invalid archive digest')
+        path=self.root/'originals'/(digest+'.jpg')
+        raw=path.read_bytes()
+        if hashlib.sha256(raw).hexdigest()!=digest:raise ValueError('Original checksum mismatch')
+        if item.get('presentation_sha256') and hashlib.sha256(self.path(image_id).read_bytes()).hexdigest()!=item['presentation_sha256']:
+            raise ValueError('Gallery presentation checksum mismatch')
+        with Image.open(self.path(image_id)) as image:image.load()
+        return raw
+
+    def migration_backup(self, index):
+        """No private migration report or artwork is distributed."""
+        raise FileNotFoundError('Installation-specific migration backup bridge is not included')
+
     def list_images(self):
         rows=[]
         for image_id,item in self.read_index().items():
@@ -67,6 +133,15 @@ class Gallery:
 
     async def send(self,image_id,frame_id,override=False):
         manager=self.hass.data['switchbot_frame_control'].select(frame_id)
+        item=await self.hass.async_add_executor_job(lambda:self.read_index().get(image_id,{}))
+        if item.get('trashed_at'):raise ValueError('Artwork is in gallery trash; restore it before sending')
+        if item.get('source_kind')=='transport_archive':
+            if item['frame_id']!=frame_id or item['panel_size']!=manager.config['panel_size'] or item['layout_at_archive']!=manager.data['layout']:
+                raise ValueError('Archived transport belongs to a different frame/layout; review its orientation before conversion')
+            raw=await self.hass.async_add_executor_job(self.verify_transport,image_id)
+            # Re-upload an already calibrated transport without applying mounting
+            # or portrait rotations for a second time.
+            return await manager.upload(raw,override_baby=override,expected_layout=dict(item['layout_at_archive']))
         raw=await self.hass.async_add_executor_job(self.path(image_id).read_bytes)
         layout=dict(manager.data.get('layout',{'orientation':'landscape','flipped':False}))
         transport=await self.hass.async_add_executor_job(prepare_transport,raw,layout,manager.config['panel_size'])

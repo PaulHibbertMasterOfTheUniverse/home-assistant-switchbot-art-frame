@@ -64,7 +64,7 @@ class GallerySendTests(unittest.IsolatedAsyncioTestCase):
         async def executor(function,*args):return function(*args)
 
         obj=NS(hass=NS(data={'switchbot_frame_control':NS(select=lambda _:manager)},async_add_executor_job=executor),
-               path=lambda _:NS(read_bytes=artwork))
+               path=lambda _:NS(read_bytes=artwork),read_index=lambda:{})
         result=await scope['send'](obj,'synthetic','example_frame')
         self.assertEqual(result,{'accepted':True})
         call=manager.upload.await_args
