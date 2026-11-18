@@ -1,3 +1,11 @@
+# 0.7.1-beta.1 — 18 November 2026
+
+- Optional upload-first private library for original 31.5-inch frames in Wi-Fi mode. Back up the cloud originals, upload and confirm/select the new artwork, then archive/remove only the eligible previous picture in the background.
+- Persist each cleanup independently; an older deletion timeout no longer blocks new sends when device and cloud capacity remain available.
+- Reconcile already-absent pictures after restart without issuing another deletion. Release the frame lock between cleanup polls.
+- Keep current selection, notification/restore references and verified private gallery originals protected. No automatic first-run purge or migration is enabled.
+- Preserve public multi-frame onboarding, account regions, local Frame 2 behaviour and optional bin reminders.
+
 # 0.7.0-beta.1
 
 - Private HA artwork gallery: save uploads/generated art, select previews and send to any configured destination; automation action included.
