@@ -97,3 +97,63 @@ backup_current_picture:
     frame_id:
       selector:
         text:
+
+inspect_library:
+  name: Inspect upload-first library
+  description: Read capacity and delivery/cleanup status without changing artwork. Original 31.5-inch Wi-Fi profile only.
+  fields:
+    frame_id:
+      required: true
+      selector:
+        text:
+
+backup_library:
+  name: Back up frame library
+  description: Save verified private cloud originals in the HA gallery without deleting or selecting. Original 31.5-inch Wi-Fi profile only.
+  fields:
+    frame_id:
+      required: true
+      selector:
+        text:
+
+retry_library_cleanup:
+  name: Retry previous-picture cleanup
+  description: Resume durable backed-up cleanup; current selection and restore references stay protected. Original 31.5-inch Wi-Fi profile only.
+  fields:
+    frame_id:
+      required: true
+      selector:
+        text:
+
+resume_library_delivery:
+  name: Resume registered library delivery
+  description: Retry an existing uncertain delivery without registering a duplicate. Original 31.5-inch Wi-Fi profile only.
+  fields:
+    frame_id:
+      required: true
+      selector:
+        text:
+
+set_library_mode:
+  name: Enable or disable upload-first library
+  description: Explicit opt-in. Backs up available originals; subsequent successful sends archive and remove eligible previous pictures from frame and cloud. Existing collections are not purged. Original 31.5-inch Wi-Fi profile only. Read docs/LIBRARY.md first.
+  fields:
+    frame_id:
+      required: true
+      selector:
+        text:
+    enabled:
+      required: true
+      selector:
+        boolean:
+    retain_indices:
+      description: Additional picture indices to retain. Normal playlist and notification/restore references are protected automatically.
+      default: []
+      selector:
+        object:
+    recover_index:
+      description: Optional existing legacy registration to reconcile, not a new upload. Use only after inspecting the frame.
+      selector:
+        number:
+          min: 1
+          max: 255

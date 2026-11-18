@@ -16,7 +16,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 import voluptuous as vol
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
-from homeassistant.core import callback
+from homeassistant.core import callback, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -25,6 +25,7 @@ from homeassistant.helpers.storage import Store
 from .protocol import AppClient, FrameError
 from .native_image import panel_bytes
 from .replacement import Replacement
+from .library import Library
 
 DOMAIN='switchbot_frame_control'
 FRAME_SCHEMA=vol.Schema({
@@ -174,6 +175,14 @@ class Manager:
              'archive_available':bool(self.data.get('last_archived_art')),
              'layout':dict(self.data.get('layout',{'orientation':'landscape','flipped':False})),
              'layout_revision':self.data.get('layout_revision',0),
+             'library_mode':bool(self.data.get('library_mode')),
+             'library_stage':self.data.get('library_transaction',{}).get('stage'),
+             'cleanup_pending':Library(self).cleanup_pending(),
+             'library_transaction':Library.describe(self.data.get('library_transaction',{})),
+             'library_cleanup_queue':[Library.describe(t) for t in self.data.get('library_cleanup_queue',[])],
+             'library_cleanup_error':self.data.get('library_cleanup_error'),
+             'library_retained_indices':self.data.get('library_retained_indices',[]),
+             'library_device_cleanup':self.data.get('library_device_cleanup'),
              'replacement':{key:self.data.get('pending_replacement',self.data.get('last_replacement',{})).get(key)
                             for key in ('index','stage','started_at','updated_at','release_requests','cloud_delete_requests','cloud_sync_requests','events')},
              'display_confirmation':'Frame-reported mode' if self.last_storage_verified else 'Not physically verified'})
@@ -718,6 +727,10 @@ class Manager:
             try:
                 content=await self.hass.async_add_executor_job(jpeg_bytes,raw)
                 digest=hashlib.sha256(content).hexdigest()
+                if self.data.get('library_mode'):
+                    if replace_index is not None:
+                        raise FrameError('Library mode never pre-deletes an artwork; resume without replacement confirmation')
+                    return await Library(self).deliver(content)
                 pending=self.data.get('pending_replacement')
                 if pending and (pending['sha256']!=digest or replace_index not in (None,pending['index'])):
                     raise FrameError('A different replacement is pending; resume the same picture without choosing another artwork')
@@ -902,6 +915,27 @@ async def async_setup(hass,config):
     async def repair(call):await target(call).repair_connection()
     async def backup_picture(call):await target(call).backup_current_picture()
     async def set_mode(call):await target(call).set_connection_mode(call.data['mode'])
+    async def library_action(call):
+        manager=target(call)
+        if manager.lock.locked():raise HomeAssistantError('Frame operation is active; retry after it finishes')
+        try:
+            async with manager.lock:
+                library=Library(manager)
+                if call.service=='inspect_library':return await library.inspect()
+                if call.service=='backup_library':return await library.backup_all()
+                if call.service=='set_library_mode':return await library.set_enabled(call.data['enabled'],call.data.get('retain_indices',[]),call.data.get('recover_index'))
+                if call.service=='resume_library_delivery':return await library.resume_delivery()
+                library.queue_cleanup()
+                return {'cleanup_pending':library.cleanup_pending()}
+        except (FrameError,ValueError,OSError,KeyError) as error:raise HomeAssistantError(str(error)) from None
+        finally:manager.publish(error=manager.error)
+    for name in ('inspect_library','backup_library','retry_library_cleanup','resume_library_delivery'):
+        hass.services.async_register(DOMAIN,name,library_action,
+            schema=vol.Schema({vol.Required('frame_id'):cv.slug}),supports_response=SupportsResponse.OPTIONAL)
+    hass.services.async_register(DOMAIN,'set_library_mode',library_action,
+        schema=vol.Schema({vol.Required('frame_id'):cv.slug,vol.Required('enabled'):cv.boolean,
+            vol.Optional('retain_indices',default=[]):vol.All(cv.ensure_list,[vol.All(vol.Coerce(int),vol.Range(min=1,max=255))]),
+            vol.Optional('recover_index'):vol.All(vol.Coerce(int),vol.Range(min=1,max=255))}),supports_response=SupportsResponse.OPTIONAL)
     async def set_layout(call):
         try:await target(call).set_layout({'orientation':call.data['orientation'],'flipped':call.data['flipped']})
         except FrameError as error:raise HomeAssistantError(str(error)) from None
@@ -937,13 +971,14 @@ async def async_setup(hass,config):
             if manager.desired():manager.schedule()
             else:
                 manager.last_action='Ready. Existing frame picture left unchanged.';manager.publish('ready')
+            Library(manager).queue_cleanup()
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED,started)
     for manager in managers.values():manager.publish()
     if hasattr(hass.http,'async_register_static_paths'):
         from homeassistant.components.http import StaticPathConfig
         from homeassistant.components.frontend import add_extra_js_url
         await hass.http.async_register_static_paths([StaticPathConfig('/switchbot_frame_control/frame-upload-card.js',str(Path(__file__).parent/'frontend/frame-upload-card.js'),True)])
-        add_extra_js_url(hass,'/switchbot_frame_control/frame-upload-card.js?v=0.7.0-beta.1')
+        add_extra_js_url(hass,'/switchbot_frame_control/frame-upload-card.js?v=0.7.1-beta.1')
     return True
 
 
@@ -980,7 +1015,9 @@ async def async_setup_entry(hass,entry):
     manager.last_action='Ready. Existing frame picture left unchanged.';manager.publish('ready')
     # Restart reconciliation is handled by async_setup's started listener. An
     # entry added while HA is already running reconciles only an active switch.
-    if hass.is_running and manager.desired():manager.schedule()
+    if hass.is_running:
+        if manager.desired():manager.schedule()
+        Library(manager).queue_cleanup()
     return True
 
 async def async_unload_entry(hass,entry):
