@@ -22,7 +22,8 @@ ns={'AsyncExitStack':__import__('contextlib').AsyncExitStack,'asyncio':asyncio,'
     'FrameError':FrameError,'AppClient':lambda *args:None,'Store':Store,'callback':lambda f:f,
     'async_get_clientsession':lambda hass:None,'MAX_SOURCE_FILE':64*1024*1024,'MAX_FILE':8*1024*1024,'DOMAIN':'switchbot_frame_control'}
 recovery={'FrameError':FrameError,'asyncio':asyncio,'time':__import__('time'),'urlparse':__import__('urllib.parse',fromlist=['urlparse']).urlparse};exec((source.parent/'replacement.py').read_text().replace('from .protocol import FrameError',''),recovery)
-ns.update(Replacement=recovery['Replacement'],Path=Path,os=__import__('os'))
+library={'FrameError':FrameError};exec((source.parent/'library.py').read_text().replace('from .protocol import FrameError',''),library)
+ns.update(Replacement=recovery['Replacement'],Library=library['Library'],Path=Path,os=__import__('os'))
 tree=ast.parse(source.read_text());nodes=[n for n in tree.body if isinstance(n,(ast.FunctionDef,ast.ClassDef)) and n.name in ('prepare_source','jpeg_bytes','image_signature','signatures_match','Manager')]
 exec(compile(ast.Module(body=nodes,type_ignores=[]),str(source),'exec'),ns)
 Manager=ns['Manager']
