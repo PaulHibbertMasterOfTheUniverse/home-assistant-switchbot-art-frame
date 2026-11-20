@@ -1,3 +1,13 @@
+# 0.7.2-beta.1 — 20 November 2026
+
+- Optional original 31.5-inch Wi-Fi library sends now save the source and return pending before image preparation, registration and delivery waits. A bounded background worker resumes after restart and retries the same registration without creating another album entry.
+- Persist command intent, identity and attempt budgets; verify storage before selection and confirmation before previous-picture cleanup. Uncertain registration stops for reconciliation.
+- Animated send progress bar; completed green bar/check only for confirmed device storage and selection. Errors stay readable, with previous-picture cleanup separate.
+- Historical generic controller failures appear in collapsed, timestamped diagnostics instead of looking like new errors when opening the dashboard. Current action/delivery errors remain visible.
+- Collapsed private gallery with full-resolution download, recoverable trash and undo. Preserve optional bin-reminder on/off controls and bundled bin artwork import.
+- Clarify advanced mounting calibration; preserve multi-frame setup, regions, bin reminders and existing Frame 2 Bluetooth behavior.
+- No automatic first-run collection purge. Original-frame Wi-Fi transfer still requires SwitchBot cloud. This remains a beta.
+
 # 0.7.1-beta.1 — 18 November 2026
 
 - Optional upload-first private library for original 31.5-inch frames in Wi-Fi mode. Back up the cloud originals, upload and confirm/select the new artwork, then archive/remove only the eligible previous picture in the background.

@@ -84,4 +84,8 @@ Source code is MIT licensed, with required third-party notices. The optional exa
 
 ## Optional upload-first library
 
-Version 0.7.1-beta.1 adds opt-in upload-first/background cleanup for original 31.5-inch Wi-Fi frames. Existing collections are not automatically purged. Read the backup, removal and recovery details in [the library guide](docs/LIBRARY.md) before enabling it.
+Version 0.7.2-beta.1 adds opt-in upload-first/background cleanup for original 31.5-inch Wi-Fi frames. Existing collections are not automatically purged. Read the backup, removal and recovery details in [the library guide](docs/LIBRARY.md) before enabling it.
+
+### Delivery feedback
+
+The dashboard shows an animated send bar until the current picture is confirmed stored and selected, then a green check. It shows text for errors; historical generic failures are kept under collapsed Previous operation diagnostics. Reload the dashboard after upgrading to load the new card. See [upload-first library](docs/LIBRARY.md) for optional background Wi-Fi sends and restart-safe retry limits. The private gallery supports download and recoverable delete/undo.
