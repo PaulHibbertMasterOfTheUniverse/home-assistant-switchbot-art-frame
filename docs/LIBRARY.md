@@ -26,7 +26,7 @@ data:
   retain_indices: []
 ```
 
-Enabling performs another verified backup. **On subsequent successful sends, eligible previous pictures will be removed from frame and cloud storage after a verified private backup.** This is the opt-in to that behaviour. Add any additional slot numbers you want to retain to `retain_indices`. Existing normal-playlist, notification and bin-reminder restore references remain protected automatically.
+Enabling performs another verified backup. **On subsequent successful sends, eligible previous pictures will be removed from frame and cloud storage after a verified private backup.** This is the opt-in to that behaviour. Add any additional slot numbers you want to retain to `retain_indices`. This list replaces the explicit retention list exactly; automatic notification and restoration protections remain independent. Existing normal-playlist, notification and bin-reminder restore references remain protected automatically.
 
 This release does **not** empty existing collections on first run. The separate first-run migration/restore-from-gallery workflow remains unfinished and is not enabled. If the frame is already full, keep your verified backups and free a slot yourself using the app; no automated bootstrap deletion is provided.
 
@@ -45,3 +45,11 @@ Disable using `set_library_mode` with `enabled: false` after delivery and cleanu
 ## Validation limits
 
 The installed development controller recovered an already-completed stuck cleanup on a real 31.5-inch device after restart, preserving its current selection and protected restore pictures. The public port has synthetic delivery, concurrency, persistence, recovery and lifecycle tests. A new end-to-end physical upload was not performed for this port. See [validation](VALIDATION.md).
+
+## Background delivery in 0.7.2
+
+The normal upload returns `accepted: true, pending: true` after saving the exact received source privately. Encoding, asset upload, registration and device waits run in a per-frame background task. This applies only to opted-in library mode. A different source is rejected while delivery is pending; resending the same source observes its existing identity without creating another registration.
+
+Budgets are persisted across restart: up to two wake/download attempts and two selections, individual remote timeouts and a ten-minute delivery deadline. The frame is allowed to settle after waking. Lost replies are checked against fresh device state before a retry. An uncertain registration is never blindly repeated. A terminal error requires inspection/reconciliation; resending does not reset the budgets.
+
+The animated bar deliberately has no invented percentage while the device reports no numeric progress. Completion means device-reported stored and selected, not physical screen inspection. Cleanup runs separately after confirmation. Delayed device membership updates can leave a cleanup warning even after cloud deletion; this is not a failed delivery and does not block another send while capacity is available.

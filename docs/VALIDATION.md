@@ -45,3 +45,11 @@ The 10 November public package also includes persisted same-slot replacement rec
 The public port carries the installed upload-first library and queue repair, adapted to explicit per-frame opt-in for the original 31.5-inch Wi-Fi profile. Regression coverage includes a real controller/gallery entry with mocked network, stale awaiting-absence state, multiple cleanup intentions, lost replies, failed persistence, identity reuse, full capacity, restart and cancellation, plus public HA service registration/lifecycle. Live development recovery confirmed a stale already-absent target without further deletion; a new physical upload was not exercised for this port. The public first-run collection migration remains deferred.
 
 Release checks: 345 Python tests passed, including real HA setup/service routing and unloading an active cleanup worker. All 13 dashboard layout tests, both image preparation/memory suites, frontend syntax and public-file/image-metadata checks passed.
+
+## 0.7.2-beta.1 delivery and dashboard
+
+The development installation delivered a newly submitted photo on the original 31.5-inch Wi-Fi profile in about 105 seconds, using one registration, one download and one selection, without intervention. Fresh device state confirmed storage/selection; physical screen inspection was not independently performed for this attempt. A previous delayed cleanup later disappeared from both catalogue and device; the following cleanup still awaited device absence after cloud deletion. Cleanup completion is not overstated.
+
+The public port preserves public setup/unload, account regions, multi-frame routing, gallery path confinement and optional bin controls. Python tests cover durable source persistence, slow registration, retries, deadline, restart, lost replies, stale identity, cleanup isolation and gallery behavior. JS tests cover preview/transport orientation, operation-bound progress, historical/current errors, per-frame actions and the SHA-256 LAN fallback. Public packaging has not itself been installed in a second household.
+
+Release checks: 385 Python tests, 13 canvas/layout tests, 11 feedback/error tests and both source-preparation/memory suites. Privacy allowlisting and approved-image metadata checks pass.

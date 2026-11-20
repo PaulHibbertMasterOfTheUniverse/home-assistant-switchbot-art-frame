@@ -23,3 +23,7 @@ Images and `index.json` are saved under `frame_art_gallery/` inside your HA conf
 The gallery is not a playlist synchroniser: selecting/sending a gallery picture adds or reuses frame storage according to the main uploader. The separate bin reminder owns one reusable notification slot and cleans up its device copy after restoring your previous artwork.
 
 With [upload-first library mode](LIBRARY.md) explicitly enabled on a supported frame, eligible previous pictures are archived here before background removal from the frame/cloud. Exact archived transport bytes are retained privately, with checksum checks and layout provenance; this is separate from saving an ordinary uploaded source.
+
+## Gallery controls
+
+The gallery is collapsed by default. Download retrieves a full-resolution saved original over an authenticated administrator-only endpoint. Delete moves an item to recoverable HA gallery trash; Undo restores the last deletion. This does not delete frame/cloud pictures. Automations cannot send a trashed image until it is restored. Bundled bin images can still be imported on request.
