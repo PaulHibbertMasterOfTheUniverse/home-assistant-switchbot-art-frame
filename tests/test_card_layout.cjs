@@ -36,10 +36,10 @@ class Canvas {
   toDataURL(){return 'data:image/jpeg;base64,'+Buffer.from(JSON.stringify({width:this.width,height:this.height,pixels:this.pixels})).toString('base64');}
 }
 const document={createElement:tag=>tag==='canvas'?new Canvas():element()};
-function element(){return {value:'',textContent:'',style:{},files:[],hidden:false,disabled:false,setAttribute(){},removeAttribute(){},replaceChildren(){},append(){}};}
+function element(){return {value:'',textContent:'',style:{},dataset:{},files:[],hidden:false,disabled:false,setAttribute(){},removeAttribute(){},replaceChildren(){},append(){}};}
 let Card;
 vm.runInNewContext(source,{HTMLElement:class{},customElements:{get(){return undefined;},define(name,cls){Card=cls;}},document,
-  window:{customCards:[]},console,URL,Blob,setInterval:()=>1,clearInterval:()=>{},setTimeout,clearTimeout});
+  window:{customCards:[]},atob,console,URL,Blob,setInterval:()=>1,clearInterval:()=>{},setTimeout,clearTimeout});
 function fixture(id='example_frame'){
   const card=Object.create(Card.prototype),nodes=new Map();
   card.shadowRoot={querySelector(selector){if(!nodes.has(selector))nodes.set(selector,element());return nodes.get(selector);},querySelectorAll(){return [];}};
@@ -124,13 +124,13 @@ test('rapid queued toggles use the previous save revision without overwriting la
 test('failed layout save blocks upload rather than using unsaved correction',async()=>{
   const {card,uploads}=fixture();card._hass.callApi=async()=>{throw Error('synthetic save failure');};
   card.flipped=true;card.rememberLayout();await card.pendingLayoutSave;await card.send();
-  assert.equal(uploads.length,0);assert.match(card.shadowRoot.querySelector('.result').textContent,/synthetic save failure/);
+  assert.equal(uploads.length,0);assert.match(card.shadowRoot.querySelector('.send-error').textContent,/synthetic save failure/);
 });
 test('source changed during async preparation is never uploaded',async()=>{
   const {card,uploads}=fixture();const original=card.decodeSource;
   card.decodeSource=async()=>{card.sourceURL='new-source';return original();};
   await card.send();assert.equal(uploads.length,0);
-  assert.match(card.shadowRoot.querySelector('.result').textContent,/changed while preparing/);
+  assert.match(card.shadowRoot.querySelector('.send-error').textContent,/changed while preparing/);
 });
 test('concurrent sends are blocked while a request is active',async()=>{
   const {card,uploads}=fixture();card.uploadTransport='wifi';await card.send();assert.equal(uploads.length,0);

@@ -65,6 +65,10 @@ class Client:
     async def show(self,index,model):self.events.append(('show',index));self.selected=index
     async def invoke(self,fn,params=None):
         if fn==9609:self.events.append(('wake',None));return
+        if fn==9601 and params['0']==1:
+            self.events.append(('download',params['1']))
+            if not self.fail_delivery:self.stored.add(params['1'])
+            return
         if params['1'] in (41,42,43):assert self.m.data['library_device_cleanup']['requests'][str(params['1'])]>0
         else:
             assert any(t['stage']=='device_release' and t['previous']['index']==params['1']
@@ -97,6 +101,7 @@ class Manager:
         self.hass.data['frame_art_gallery']=Gallery(self.hass,{'directory':'gallery'})
         self.client=Client(self)
     def connection_mode(self):return 'wifi'
+    async def prepare_library_source(self,raw):return controller_namespace['jpeg_bytes'](raw)
     def protected_indices(self):return set(self.data['baby_indices'])|{31}
     def desired(self):return self.notifications
     async def save_verified(self):
@@ -112,14 +117,42 @@ class Manager:
         return index
     def publish(self,*args,**kwargs):pass
 
+class ImmediateLibrary(Library):
+    """Cleanup regression harness: drain new delivery steps with a virtual clock.
+
+    Production still returns pending; dedicated worker tests cover that contract.
+    """
+    async def drain(self):
+        for _ in range(300):
+            delay=await self.delivery_step()
+            if delay is None:break
+            module.time.now+=delay
+        t=self.m.data['library_transaction']
+        if t['stage']=='delivery_error':raise FrameError(t.get('error'))
+        return self.delivery_response()
+    async def deliver(self,content):
+        with patch.object(self,'queue_delivery'):result=await super().deliver(content)
+        return await self.drain() if result['pending'] else result
+    async def submit(self,raw):
+        with patch.object(self,'queue_delivery'):result=await super().submit(raw)
+        return await self.drain() if result['pending'] else result
+    async def resume_delivery(self):
+        with patch.object(self,'queue_delivery'):await super().resume_delivery()
+        return await self.drain()
+
+controller_namespace['Library']=ImmediateLibrary
+
 class Tests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.temp=tempfile.TemporaryDirectory();self.m=Manager(self.temp.name);self.lib=Library(self.m)
+        self.temp=tempfile.TemporaryDirectory();self.m=Manager(self.temp.name);self.lib=ImmediateLibrary(self.m)
+        clock=types.SimpleNamespace(now=1000);clock.time=lambda:clock.now
+        self.time_patch=patch.object(module,'time',clock);self.time_patch.start()
         self.sleep_patch=patch.object(module.asyncio,'sleep',no_sleep);self.sleep_patch.start()
     async def asyncTearDown(self):
         task=getattr(self.m,'library_cleanup_task',None)
         if task is not None:await task
         self.sleep_patch.stop();self.temp.cleanup()
+        self.time_patch.stop()
     async def confirmed(self):
         with patch.object(self.lib,'queue_cleanup'):
             return await self.lib.deliver(jpeg((12,34,56)))
@@ -129,6 +162,31 @@ class Tests(unittest.IsolatedAsyncioTestCase):
             if not self.lib.cleanup_pending():return result
         raise FrameError('Cleanup remains pending')
     def mutations(self):return [e for e in self.m.client.events if e[0] in ('release','delete','sync')]
+
+    async def test_replace_explicit_retention_keeps_automatic_restore_protection(self):
+        self.m.data['library_retained_indices']=[20,31,32]
+        self.m.data['normal_indices']=[20]
+        self.m.data['baby_indices']=[32]
+        reminder=types.SimpleNamespace(manager=self.m,data={'slot':{'index':31}})
+        self.m.hass.data['frame_bin_reminder']=reminder
+        await self.lib.set_enabled(True, [31])
+        self.assertEqual(self.m.data['library_retained_indices'],[31])
+        self.assertEqual(self.lib.protected(),{20,31,32})
+        reminder.data['snapshot']={'index':44}
+        self.assertIn(44,self.lib.protected())
+        self.assertEqual(self.m.client.events,[])
+
+    async def test_replace_retention_failed_save_preserves_old_protection(self):
+        self.m.data['library_retained_indices']=[20,31,32]
+        original=self.m.save_verified
+        async def fail_replacement():
+            if self.m.data['library_retained_indices']==[31,32]:raise OSError('commit failed')
+            await original()
+        self.m.save_verified=fail_replacement
+        with self.assertRaises(OSError):await self.lib.set_enabled(True,[31,32])
+        self.assertEqual(self.m.data['library_retained_indices'],[20,31,32])
+        self.assertEqual(self.m.client.events,[])
+
     async def test_new_stored_and_selected_returns_before_old_archive_or_delete(self):
         async with self.m.lock:
             result=await self.lib.deliver(jpeg((12,34,56)))
@@ -145,7 +203,7 @@ class Tests(unittest.IsolatedAsyncioTestCase):
     async def test_unconfirmed_delivery_never_cleans_up(self):
         self.m.client.fail_delivery=True;result=await self.lib.deliver(jpeg())
         self.assertFalse(result['local_storage_verified']);self.assertEqual(self.mutations(),[])
-        self.assertEqual(self.m.data['library_transaction']['stage'],'awaiting_delivery')
+        self.assertEqual(self.m.data['library_transaction']['stage'],'delivery_exhausted')
     async def test_capacity_full_never_predeletes(self):
         self.m.client.items={i:row(i) for i in range(10,20)};self.m.client.stored=set(self.m.client.items);self.m.client.selected=10
         with self.assertRaisesRegex(FrameError,'never pre-deletes'):await self.lib.deliver(jpeg())
@@ -268,8 +326,18 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(FrameError,'receipt'):await self.lib.deliver(raw)
         self.assertEqual(self.m.client.events,[])
     async def test_untested_size_is_not_supported(self):
-        self.m.config['panel_size']='13.3'
-        with self.assertRaises(FrameError):await self.lib.snapshot()
+        self.m.config["panel_size"]="13.3"
+        with self.assertRaises(FrameError):await self.lib.inspect()
+    async def test_private_device_migration_bridge_is_excluded_and_fails_closed(self):
+        with self.assertRaisesRegex(FrameError,'not included'):
+            await self.lib.cleanup_device_slots([41,42,43])
+        self.assertEqual(self.m.client.events,[])
+    async def test_device_cleanup_requires_stored_and_selected_44(self):
+        with self.assertRaises(FrameError):await self.lib.cleanup_device_slots([41,42,43])
+        self.assertEqual(self.m.client.events,[])
+    async def test_device_cleanup_rejects_arbitrary_or_protected_indices(self):
+        with self.assertRaises(FrameError):await self.lib.cleanup_device_slots([31,32])
+        self.assertEqual(self.m.client.events,[])
     async def test_per_frame_opt_in_required(self):
         self.m.data.pop('library_mode')
         with self.assertRaisesRegex(FrameError,'Opt into'):await self.lib.deliver(jpeg())
@@ -452,26 +520,31 @@ class Tests(unittest.IsolatedAsyncioTestCase):
 
 if __name__=='__main__':unittest.main()
 
-class PublicScopeTests(unittest.IsolatedAsyncioTestCase):
+class PublicFrameEligibility(unittest.IsolatedAsyncioTestCase):
     async def test_valid_second_frame_is_supported_without_household_name_gate(self):
         with tempfile.TemporaryDirectory() as directory:
             manager=Manager(directory);manager.frame_id='another_frame'
             selected,stored,items=await Library(manager).snapshot()
             self.assertEqual(selected,20);self.assertEqual(stored,set(items))
 
-    async def test_disabling_with_queued_cleanup_cannot_abandon_intent(self):
+class GalleryControls(unittest.IsolatedAsyncioTestCase):
+    async def test_recoverable_trash_hides_without_deleting_and_restores(self):
         with tempfile.TemporaryDirectory() as directory:
-            manager=Manager(directory);library=Library(manager)
-            with patch.object(library,'queue_cleanup'):await library.deliver(jpeg())
-            with self.assertRaisesRegex(FrameError,'Resolve'):
-                await library.set_enabled(False,[])
-            self.assertTrue(library.enabled());self.assertTrue(library.cleanup_pending())
+            m=Manager(directory);gallery=m.hass.data['frame_art_gallery'];m.hass.data['switchbot_frame_control']=types.SimpleNamespace(select=lambda _:m)
+            image_id=gallery.import_transport(jpeg(),'library_frame',m.data['layout'],'31.5',{},True)
+            raw=gallery.download(image_id)[0]
+            gallery.trash(image_id)
+            self.assertEqual(gallery.list_images(),[])
+            self.assertTrue(gallery.path(image_id).exists())
+            with self.assertRaises(KeyError):gallery.download(image_id)
+            with self.assertRaisesRegex(ValueError,'trash'):await gallery.send(image_id,'library_frame')
+            gallery.trash(image_id,True)
+            self.assertEqual(gallery.download(image_id)[0],raw)
+            self.assertEqual(gallery.list_images()[0]['id'],image_id)
 
-    async def test_other_generation_and_mode_fail_closed(self):
+    async def test_download_and_trash_reject_path_escape(self):
         with tempfile.TemporaryDirectory() as directory:
-            manager=Manager(directory);library=Library(manager)
-            manager.config['model']='frame2'
-            with self.assertRaises(FrameError):await library.inspect()
-            manager.config['model']='frame1';manager.connection_mode=lambda:'hybrid'
-            with self.assertRaises(FrameError):await library.inspect()
-            self.assertEqual(manager.client.events,[])
+            gallery=Manager(directory).hass.data['frame_art_gallery']
+            for name in ('../outside','/etc/passwd','bad.name'):
+                with self.assertRaises(ValueError):gallery.download(name)
+                with self.assertRaises(ValueError):gallery.trash(name)

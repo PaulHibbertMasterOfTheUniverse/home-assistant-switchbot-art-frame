@@ -112,14 +112,43 @@ class Gallery:
         raise FileNotFoundError('Installation-specific migration backup bridge is not included')
 
     def list_images(self):
-        rows=[]
-        for image_id,item in self.read_index().items():
-            path=self.path(image_id)
-            if not path.exists():continue
+        rows = []
+        for image_id, item in self.read_index().items():
+            if item.get('trashed_at'):
+                continue
+            path = self.path(image_id)
+            if not path.exists():
+                continue
             with Image.open(path) as im:
-                im.thumbnail((180,180));buf=io.BytesIO();im.convert('RGB').save(buf,'JPEG',quality=75)
-            rows.append({'id':image_id,**item,'thumbnail':base64.b64encode(buf.getvalue()).decode()})
+                im.thumbnail((180, 180))
+                buf = io.BytesIO()
+                im.convert('RGB').save(buf, 'JPEG', quality=75)
+            rows.append({'id': image_id, **item, 'thumbnail': base64.b64encode(buf.getvalue()).decode()})
         return rows
+    def download(self, image_id):
+        self.path(image_id)
+        item = self.read_index()[image_id]
+        if item.get('trashed_at'):
+            raise KeyError(image_id)
+        raw = self.verify_transport(image_id) if item.get('original_sha256') or item.get('archived_original_sha256') else self.path(image_id).read_bytes()
+        with Image.open(io.BytesIO(raw)) as image:
+            mime = Image.MIME.get(image.format, 'application/octet-stream')
+            extension = {'JPEG': 'jpg', 'PNG': 'png', 'WEBP': 'webp'}.get(image.format, 'bin')
+        name = re.sub('[^a-zA-Z0-9 _-]', '_', item.get('name', 'Artwork')).strip(' _')[:80] or 'Artwork'
+        return (raw, mime, name + '.' + extension)
+
+    def trash(self, image_id, restore=False):
+        self.path(image_id)
+        index = self.read_index()
+        item = index[image_id]
+        if restore:
+            item.pop('trashed_at', None)
+        elif not item.get('trashed_at'):
+            self.write_private(self.root / 'trash' / (image_id + '.json'), json.dumps(item).encode())
+            item['trashed_at'] = datetime.now(timezone.utc).isoformat()
+        self.write_private(self.root / 'index.json', json.dumps(index).encode())
+        return {'id': image_id, 'trashed': bool(item.get('trashed_at'))}
+
     def save_image(self,raw,name):
         raw=normalise(raw);image_id='art_'+hashlib.sha256(raw).hexdigest()[:24]
         self.root.mkdir(parents=True,exist_ok=True,mode=0o700)
@@ -179,10 +208,31 @@ class ImageView(HomeAssistantView):
         except (ValueError,OSError):return self.json({'error':'Artwork not found'},status_code=404)
         return self.json({'image':base64.b64encode(raw).decode(),'id':image_id})
 
+class ArtworkView(HomeAssistantView):
+    url='/api/frame_art_gallery/artwork/{image_id}';name='api:frame_art_gallery:artwork';requires_auth=True
+    def __init__(self,gallery):self.gallery=gallery
+    async def get(self,request,image_id):
+        if not request['hass_user'].is_admin:return self.json({'error':'Administrator access required'},status_code=403)
+        try:
+            async with self.gallery.lock:
+                raw,mime,name=await self.gallery.hass.async_add_executor_job(self.gallery.download,image_id)
+            return web.Response(body=raw,content_type=mime,headers={'Content-Disposition':'attachment; filename="'+name+'"','Cache-Control':'no-store'})
+        except (ValueError,KeyError,OSError):return self.json({'error':'Artwork not found'},status_code=404)
+    async def post(self,request,image_id):
+        if not request['hass_user'].is_admin:return self.json({'error':'Administrator access required'},status_code=403)
+        body=await request.json()
+        if body.get('action') not in ('trash','restore') or body.get('confirm') is not True:
+            return self.json({'error':'Explicit trash or restore confirmation required'},status_code=400)
+        try:
+            async with self.gallery.lock:
+                result=await self.gallery.hass.async_add_executor_job(self.gallery.trash,image_id,body['action']=='restore')
+            return self.json(result)
+        except (ValueError,KeyError,OSError):return self.json({'error':'Artwork not found'},status_code=404)
+
 async def async_setup(hass,config):
     if DOMAIN not in config:return True
     gallery=Gallery(hass,config[DOMAIN]);hass.data[DOMAIN]=gallery
-    hass.http.register_view(GalleryView(gallery));hass.http.register_view(ImageView(gallery))
+    hass.http.register_view(GalleryView(gallery));hass.http.register_view(ImageView(gallery));hass.http.register_view(ArtworkView(gallery))
     async def send(call):
         try:return await gallery.send(call.data['image_id'],call.data['frame_id'],call.data.get('override_baby',False))
         except Exception as error:

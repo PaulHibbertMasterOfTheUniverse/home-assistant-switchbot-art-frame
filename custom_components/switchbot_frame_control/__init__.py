@@ -176,9 +176,9 @@ class Manager:
              'layout':dict(self.data.get('layout',{'orientation':'landscape','flipped':False})),
              'layout_revision':self.data.get('layout_revision',0),
              'library_mode':bool(self.data.get('library_mode')),
-             'library_stage':self.data.get('library_transaction',{}).get('stage'),
+             'library_stage':Library(self).current_operation().get('stage'),
              'cleanup_pending':Library(self).cleanup_pending(),
-             'library_transaction':Library.describe(self.data.get('library_transaction',{})),
+             'library_transaction':Library.describe(Library(self).current_operation()),
              'library_cleanup_queue':[Library.describe(t) for t in self.data.get('library_cleanup_queue',[])],
              'library_cleanup_error':self.data.get('library_cleanup_error'),
              'library_retained_indices':self.data.get('library_retained_indices',[]),
@@ -338,7 +338,7 @@ class Manager:
         # they finish and immediately before an irreversible registration.
         if self.data.get('pending_replacement'):await Replacement(self).check_ready(digest)
         self.data['pending_cloud_registration']={'sha256':digest,'files':names}
-        if self.data.get('pending_replacement'):await self.save_verified()
+        if self.data.get('pending_replacement') or self.data.get('library_mode'):await self.save_verified()
         else:await self.save()
         try:
             index=self.check_index(await self.client.register_image(names))
@@ -358,7 +358,9 @@ class Manager:
                     raise error
                 else:raise error
             else:raise
-        ledger[digest]=index;self.data.pop('pending_cloud_registration',None);await self.save()
+        ledger[digest]=index;self.data.pop('pending_cloud_registration',None)
+        if self.data.get('library_mode'):await self.save_verified()
+        else:await self.save()
         await Replacement(self).complete(digest,index)
         return index
 
@@ -715,7 +717,22 @@ class Manager:
         await self.save()
         return index
 
+    async def prepare_library_source(self,raw):
+        return await self.hass.async_add_executor_job(jpeg_bytes,raw)
+
     async def upload(self,raw,override_baby=False,replace_index=None,expected_layout=None):
+        # The worker may own the lock during slow cloud registration. A retry
+        # must not hide another multi-minute foreground wait behind that lock.
+        if self.data.get('library_mode') and self.lock.locked():
+            if replace_index is not None or (expected_layout is not None and expected_layout!=self.data.get('layout')):
+                raise FrameError('Replacement or layout changed; inspect the pending operation')
+            library=Library(self);submission=self.data.get('library_submission',{})
+            transaction=self.data.get('library_transaction',{})
+            digest=hashlib.sha256(raw).hexdigest()
+            if (digest in (submission.get('sha256'),transaction.get('request_sha256'),transaction.get('sha256'))
+                    and library.current_operation().get('stage') in library.delivery_stages):
+                return library.delivery_response()
+            raise FrameError('Frame operation is active; inspect current delivery before sending another source')
         async with self.lock:
             if expected_layout is not None and expected_layout!=self.data.get('layout',{'orientation':'landscape','flipped':False}):
                 raise FrameError('Saved frame layout changed. Refresh the preview and send again; nothing was removed')
@@ -725,12 +742,12 @@ class Manager:
                 self.data['art_override']=True;await self.save()
             self.publish('uploading')
             try:
-                content=await self.hass.async_add_executor_job(jpeg_bytes,raw)
-                digest=hashlib.sha256(content).hexdigest()
                 if self.data.get('library_mode'):
                     if replace_index is not None:
                         raise FrameError('Library mode never pre-deletes an artwork; resume without replacement confirmation')
-                    return await Library(self).deliver(content)
+                    return await Library(self).submit(raw)
+                content=await self.hass.async_add_executor_job(jpeg_bytes,raw)
+                digest=hashlib.sha256(content).hexdigest()
                 pending=self.data.get('pending_replacement')
                 if pending and (pending['sha256']!=digest or replace_index not in (None,pending['index'])):
                     raise FrameError('A different replacement is pending; resume the same picture without choosing another artwork')
@@ -971,14 +988,14 @@ async def async_setup(hass,config):
             if manager.desired():manager.schedule()
             else:
                 manager.last_action='Ready. Existing frame picture left unchanged.';manager.publish('ready')
-            Library(manager).queue_cleanup()
+            Library(manager).queue_cleanup();Library(manager).queue_delivery()
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED,started)
     for manager in managers.values():manager.publish()
     if hasattr(hass.http,'async_register_static_paths'):
         from homeassistant.components.http import StaticPathConfig
         from homeassistant.components.frontend import add_extra_js_url
         await hass.http.async_register_static_paths([StaticPathConfig('/switchbot_frame_control/frame-upload-card.js',str(Path(__file__).parent/'frontend/frame-upload-card.js'),True)])
-        add_extra_js_url(hass,'/switchbot_frame_control/frame-upload-card.js?v=0.7.1-beta.1')
+        add_extra_js_url(hass,'/switchbot_frame_control/frame-upload-card.js?v=0.7.2-beta.1')
     return True
 
 
@@ -1017,7 +1034,7 @@ async def async_setup_entry(hass,entry):
     # entry added while HA is already running reconciles only an active switch.
     if hass.is_running:
         if manager.desired():manager.schedule()
-        Library(manager).queue_cleanup()
+        Library(manager).queue_cleanup();Library(manager).queue_delivery()
     return True
 
 async def async_unload_entry(hass,entry):
