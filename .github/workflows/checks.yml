@@ -19,5 +19,6 @@ jobs:
       - run: node tests/test_card_memory.cjs
       - run: node tests/test_card_preparation.cjs
       - run: node --test tests/test_card_layout.cjs
+      - run: node --test tests/test_card_feedback.cjs
       - run: python tools/check_public.py
       - run: python tools/build_release.py
