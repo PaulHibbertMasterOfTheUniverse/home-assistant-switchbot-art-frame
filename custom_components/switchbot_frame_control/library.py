@@ -4,9 +4,11 @@ Entry points and individual cleanup steps hold Manager.lock. Polling waits do
 not. Cleanup intents survive subsequent deliveries, failures and restarts.
 """
 import asyncio
+import base64
 import copy
 import hashlib
 import json
+import time
 from urllib.parse import urlparse
 
 from .protocol import FrameError
@@ -31,11 +33,10 @@ class Library:
             raise FrameError('Private HA gallery is not available; nothing was removed')
         return gallery
 
-    def protected(self):
+    def automatic_protected(self):
         # Preserve the entire existing normal-restore set, not just notifications.
         # No migration/re-upload of those references is attempted by this pilot.
-        result = (set(self.m.protected_indices()) | set(self.m.data['normal_indices'])
-                  | set(self.m.data.get('library_retained_indices', [])))
+        result = set(self.m.protected_indices()) | set(self.m.data['normal_indices'])
         reminder = self.m.hass.data.get('frame_bin_reminder')
         if reminder is not None and getattr(reminder, 'manager', None) is self.m:
             for value in (reminder.data.get('slot', {}).get('index'),
@@ -43,6 +44,9 @@ class Library:
                 if type(value) is int:
                     result.add(value)
         return result
+
+    def protected(self):
+        return self.automatic_protected() | set(self.m.data.get('library_retained_indices', []))
 
     def restoration_active(self):
         reminder = self.m.hass.data.get('frame_bin_reminder')
@@ -79,7 +83,7 @@ class Library:
 
     async def inspect(self):
         selected, stored, items = await self.snapshot()
-        transaction = self.m.data.get('library_transaction', {})
+        transaction = self.current_operation()
         return {'selected_index': selected, 'stored_indices': sorted(stored),
                 'cloud': [{'index': i, 'status': row.get('status')} for i, row in sorted(items.items())],
                 'unsettled_cloud_indices': self.unsettled(items),
@@ -138,6 +142,14 @@ class Library:
         return report
 
     async def set_enabled(self, enabled, retain_indices, recover_index=None):
+        before = copy.deepcopy(self.m.data)
+        try:
+            return await self._set_enabled(enabled, retain_indices, recover_index)
+        except BaseException:
+            self.m.data.clear(); self.m.data.update(before)
+            raise
+
+    async def _set_enabled(self, enabled, retain_indices, recover_index=None):
         self.supported()
         if enabled:
             if self.restoration_active() or self.m.data.get('pending_cloud_registration') or self.m.data.get('pending_replacement'):
@@ -154,12 +166,12 @@ class Library:
             unsettled = set(self.unsettled(items))
             if unsettled - ({recover_index} if recover_index is not None else set()):
                 raise FrameError('Backup imported, but unrelated cloud status is unsettled; library mode remains off')
-            # Explicitly retained migration targets remain protected after restart.
-            self.m.data['library_retained_indices'] = sorted(set(retain_indices) | self.protected())
+            # Replace only explicit choices; automatic restore protections stay dynamic.
+            self.m.data['library_retained_indices'] = sorted(set(retain_indices))
             if recover_index is not None:
                 await self.adopt(recover_index)
-        elif self.cleanup_pending() or self.m.data.get('library_transaction', {}).get('stage') not in (None, 'complete'):
-            raise FrameError('Resolve the durable library transaction before disabling library mode')
+        elif self.m.data.get('library_transaction', {}).get('stage') not in (None, 'complete'):
+            raise FrameError('Resolve the durable library transaction before disabling the pilot')
         self.m.data['library_mode'] = bool(enabled)
         await self.m.save_verified()
         return {'enabled': bool(enabled), 'protected_indices': sorted(self.protected()), 'cleanup_performed': False}
@@ -190,32 +202,25 @@ class Library:
     async def resume_delivery(self):
         """Explicit recovery of one adopted/registered image; never registers."""
         transaction = self.m.data.get('library_transaction', {})
-        if not self.enabled() or transaction.get('stage') not in ('registered', 'awaiting_delivery'):
+        if not self.enabled() or transaction.get('stage') not in ('registered', 'awaiting_delivery', 'prepared', 'registering'):
             raise FrameError('No existing image awaits delivery recovery')
-        selected, stored, items = await self.snapshot()
-        index = transaction['new_index']
-        if self.restoration_active() or index not in items or self.identity(items[index]) != transaction['new_identity']:
-            raise FrameError('Recovery paused: notification or image identity changed')
         await self.verify(transaction['new_gallery_id'])
-        if transaction.get('adopted') and index not in stored:
-            raise FrameError('Adopted recovery image is no longer stored; no download or registration attempted')
-        if index not in stored:
-            await self.m.client.download(index, 'frame1')
-            await self.m.client.select_downloaded(index, 'frame1')
-        elif selected != index:
-            await self.m.client.show(index, 'frame1')
-        return await self.confirm_delivery(index)
+        self.queue_delivery()
+        return self.delivery_response()
 
     async def stage(self, stage, **values):
+        before = copy.deepcopy(self.m.data)
         self.m.data['library_transaction'].update(stage=stage, **values)
-        await self.m.save_verified()
+        try:
+            await self.m.save_verified()
+        except BaseException:
+            self.m.data.clear(); self.m.data.update(before)
+            raise
 
     async def begin(self, content):
-        selected, stored, items = await self.snapshot()
-        if self.restoration_active() or self.m.data.get('pending_cloud_registration') or self.m.data.get('pending_replacement'):
+        selected, stored, items = await asyncio.wait_for(self.snapshot(), self.command_timeout)
+        if self.restoration_active() or self.m.data.get('pending_replacement'):
             raise FrameError('Notification/restoration or uncertain transfer is active; nothing was removed')
-        if self.unsettled(items):
-            raise FrameError('Cloud status is unsettled; do not start another transfer')
         digest = hashlib.sha256(content).hexdigest()
         transaction = self.m.data.get('library_transaction')
         if transaction and transaction['stage'] in self.cleanup_stages:
@@ -228,7 +233,13 @@ class Library:
             if new is not None and (new not in items or self.identity(items[new]) != transaction['new_identity']):
                 raise FrameError('Previously registered slot changed; refusing stale-ledger reuse')
             await self.verify(transaction['new_gallery_id'])
+            if set(self.unsettled(items)) - ({new} if new is not None else set()):
+                raise FrameError('Unrelated cloud status is unsettled; delivery paused')
             return transaction
+        if self.m.data.get('pending_cloud_registration'):
+            raise FrameError('Registration outcome is uncertain; reconcile without another upload')
+        if self.unsettled(items):
+            raise FrameError('Cloud status is unsettled; do not start another transfer')
         if transaction and transaction['stage'] != 'complete':
             raise FrameError('A different library transaction is pending; resume it explicitly')
         if digest in self.m.data.get('cloud_art_uploads', {}):
@@ -253,46 +264,316 @@ class Library:
 
     async def deliver(self, content):
         self.supported()
-        if not self.enabled():raise FrameError('Opt into this frame library mode before sending through the library mode')
+        if not self.enabled():raise FrameError('Opt into this frame library mode before sending through the library pilot')
         transaction = await self.begin(content)
-        index = await self.m.cloud_art(content)
-        _, _, items = await self.snapshot()
-        if index not in items:
-            raise FrameError('Registered image is not visible in the catalogue; cleanup is suspended')
-        if transaction.get('new_index') is not None and transaction['new_identity'] != self.identity(items[index]):
-            raise FrameError('Registered image identity changed; cleanup is suspended')
-        await self.stage('registered', new_index=index, new_identity=self.identity(items[index]))
-        await self.m.client.download(index, 'frame1')
-        # Existing production polling/selection stays unchanged, then independently
-        # require both 9606 membership AND selected 9601 before any deletion.
-        await self.m.client.select_downloaded(index, 'frame1')
-        return await self.confirm_delivery(index)
-
-    async def confirm_delivery(self, index):
-        transaction = self.m.data['library_transaction']
-        for attempt in range(40):
+        if transaction.get('stage') == 'complete':
             selected, stored, items = await self.snapshot()
-            if index in items and self.identity(items[index]) != transaction['new_identity']:
-                raise FrameError('New slot was reused; cleanup suspended')
-            if selected == index and index in stored and index in items:
-                # A legacy status=0 is not itself proof of an active transfer.
-                # Reconcile it only for this exact identity after both device
-                # membership and selection are freshly confirmed.
-                self.m.data.setdefault('library_reconciled_status',{})[str(index)]=self.identity(items[index])
-                await self.stage('confirmed')
+            if selected == transaction.get('new_index') and selected in stored:
+                return self.delivery_response()
+            await self.stage('awaiting_delivery')
+        self.queue_delivery()
+        return self.delivery_response()
+
+    def current_operation(self):
+        submission = self.m.data.get('library_submission')
+        if submission:
+            return {'stage': submission['stage'], 'error': submission.get('error'),
+                    'operation_id': submission['sha256'],
+                    'delivery': {'phase': submission.get('phase', 'source_saved'), 'download_attempts': 0,
+                                 'selection_attempts': 0}}
+        return self.m.data.get('library_transaction', {})
+
+    async def submit(self, raw):
+        """Normal HTTP path: durable exact bytes, no image work or vendor I/O.
+
+        Caller holds Manager.lock. Disk persistence is required before acceptance;
+        all image decoding, archive presentation, network and registration is queued.
+        """
+        self.supported()
+        if not self.enabled():
+            raise FrameError('Opt into this frame library mode before sending')
+        if not isinstance(raw, bytes) or not 0 < len(raw) <= 8*1024*1024:
+            raise FrameError('Invalid or oversized source')
+        digest = hashlib.sha256(raw).hexdigest()
+        submission = self.m.data.get('library_submission')
+        t = self.m.data.get('library_transaction', {})
+        if t.get('stage') in self.cleanup_stages:
+            await self.enqueue_cleanup()
+            t = self.m.data['library_transaction']
+        if submission:
+            if submission['sha256'] != digest:
+                raise FrameError('A different source is pending; no new registration attempted')
+        elif digest in (t.get('request_sha256'), t.get('sha256')):
+            # The worker, not this HTTP call, validates fresh identity/status.
+            if t.get('stage') == 'complete':
+                await self.stage('awaiting_delivery')
+        else:
+            if (self.restoration_active() or self.m.data.get('pending_cloud_registration')
+                    or self.m.data.get('pending_replacement')
+                    or t.get('stage') not in (None, 'complete')):
+                raise FrameError('Different delivery or uncertain transfer is active; no new registration attempted')
+            before = copy.deepcopy(self.m.data)
+            self.m.data['library_submission'] = {'stage': 'prepared', 'sha256': digest,
+                'source_b64': base64.b64encode(raw).decode('ascii'),
+                'created_at': time.time(), 'layout': copy.deepcopy(self.m.data['layout'])}
+            try:
+                await self.m.save_verified()
+            except BaseException:
+                self.m.data.clear(); self.m.data.update(before)
+                raise
+        self.queue_delivery()
+        self.m.last_action = 'Exact source saved; preparation and cloud/device delivery are pending'
+        op = self.current_operation()
+        self.m.publish('delivery_pending' if op.get('stage') in self.delivery_stages else op.get('stage'))
+        return self.delivery_response()
+
+    async def confirm_delivery(self, index, observed=None):
+        """Single fresh confirmation, never a second long polling window."""
+        transaction = self.m.data['library_transaction']
+        selected, stored, items = observed if observed is not None else await asyncio.wait_for(self.snapshot(), self.command_timeout)
+        if index not in items or self.identity(items[index]) != transaction['new_identity']:
+            raise FrameError('New slot was reused; cleanup suspended')
+        if selected == index and index in stored:
+            # Cloud status alone is not delivery; both device fields were checked.
+            self.m.data.setdefault('library_reconciled_status',{})[str(index)]=self.identity(items[index])
+            await self.stage('confirmed')
+            try:
                 await self.enqueue_cleanup()
+            except Exception:
+                # Confirmed delivery is durable even if queue migration failed.
+                self.m.last_action = 'Device delivery verified; cleanup persistence pending'
+                self.m.publish('art_selected')
+                return True
+            else:
                 self.queue_cleanup()
                 self.m.last_action = 'New artwork stored and selected; previous-slot cleanup queued'
                 self.m.publish('art_selected')
-                return {'accepted': True, 'local_storage_verified': True, 'display_verified': False,
-                        'cloud_upload': True, 'transport': 'SwitchBot cloud / Wi-Fi', 'cleanup_pending': self.cleanup_pending()}
-            if attempt < 39:
-                await asyncio.sleep(3)
-        await self.stage('awaiting_delivery')
-        self.m.last_action = 'New upload accepted; storage/selection not both confirmed. Previous artwork retained.'
-        self.m.publish('cloud_request_accepted')
-        return {'accepted': True, 'local_storage_verified': False, 'display_verified': False,
-                'library_cleanup': 'not attempted; delivery unconfirmed'}
+                return True
+        return False
+
+    delivery_stages = ('prepared', 'registering', 'registered', 'awaiting_delivery')
+    max_attempts = 2
+    storage_polls = 40
+    selection_polls = 20
+    command_timeout = 20
+    registration_timeout = 180
+    delivery_timeout = 600
+
+    def delivery_response(self):
+        t = self.current_operation()
+        return {'accepted': True, 'pending': t.get('stage') in self.delivery_stages,
+                'local_storage_verified': t.get('stage') == 'complete' or t.get('stage') in self.cleanup_stages,
+                'display_verified': False, 'delivery': self.describe(t),
+                'cleanup_pending': self.cleanup_pending()}
+
+    async def progress(self, phase, **values):
+        t = self.m.data['library_transaction']
+        delivery = dict(t.get('delivery', {}), phase=phase, updated_at=time.time(), **values)
+        await self.stage(t['stage'], delivery=delivery)
+        self.m.last_action = 'Delivery: ' + phase.replace('_', ' ') + '; physical display not verified'
+        self.m.publish('delivery_pending')
+
+    async def stop_delivery(self, stage, reason):
+        if self.m.data.get('library_submission'):
+            before = copy.deepcopy(self.m.data)
+            self.m.data['library_submission'].update(stage=stage, error=reason)
+            try:
+                await self.m.save_verified()
+            except BaseException:
+                self.m.data.clear(); self.m.data.update(before)
+                raise
+        else:
+            await self.stage(stage, error=reason)
+        self.m.last_action = reason + '; previous artwork retained. Do not upload a duplicate.'
+        self.m.publish(stage, error=reason)
+
+    def queue_delivery(self):
+        task = getattr(self.m, 'library_delivery_task', None)
+        if task is not None and not task.done():
+            return
+        if not self.enabled() or self.current_operation().get('stage') not in self.delivery_stages:
+            return
+
+        async def run():
+            try:
+                while True:
+                    async with self.m.lock:
+                        delay = await self.delivery_step()
+                    if delay is None:
+                        return
+                    # Never hold Manager.lock over wake-settling or polling waits.
+                    await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                # Every command intent/budget was saved first; restart resumes observation.
+                raise
+            except Exception:
+                async with self.m.lock:
+                    try:
+                        await self.stop_delivery('delivery_error', 'Delivery state could not be verified or persisted')
+                    except Exception:
+                        # Persistence is unhealthy: do not issue further commands.
+                        self.m.publish('delivery_error', error='Delivery persistence failed; recovery paused')
+
+        self.m.library_delivery_task = self.m.hass.async_create_background_task(run(), 'frame library delivery')
+        self.m.tasks.add(self.m.library_delivery_task)
+        self.m.library_delivery_task.add_done_callback(self.m.tasks.discard)
+
+    async def delivery_step(self):
+        """One serialized bounded step. Only this worker registers/downloads/selects."""
+        submission = self.m.data.get('library_submission')
+        if submission:
+            if submission['stage'] != 'prepared':
+                return None
+            try:
+                if time.time() >= submission['created_at'] + self.delivery_timeout:
+                    await self.stop_delivery('delivery_exhausted', 'Preparation deadline exhausted; source retained')
+                    return None
+                if submission['layout'] != self.m.data['layout']:
+                    raise FrameError('Saved layout changed during preparation')
+                raw = base64.b64decode(submission['source_b64'], validate=True)
+                if hashlib.sha256(raw).hexdigest() != submission['sha256']:
+                    raise FrameError('Saved exact source changed')
+                submission.update(phase='preparing_source', updated_at=time.time())
+                await self.m.save_verified()
+                self.m.last_action = 'Preparing durable source; cloud registration not yet started'
+                self.m.publish('delivery_pending')
+                remaining = submission['created_at']+self.delivery_timeout-time.time()
+                content = await asyncio.wait_for(self.m.prepare_library_source(raw), min(self.registration_timeout, max(.01, remaining)))
+                await self.begin(content)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                await self.stop_delivery('delivery_error', 'Source preparation or readiness verification failed; source retained')
+                return None
+            before = copy.deepcopy(self.m.data)
+            self.m.data['library_transaction']['request_sha256'] = submission['sha256']
+            if self.m.data['library_transaction']['stage'] == 'complete':
+                self.m.data['library_transaction']['stage'] = 'awaiting_delivery'
+            self.m.data['library_transaction'].setdefault('delivery', {
+                'phase': 'ready', 'started_at': submission['created_at'],
+                'deadline': submission['created_at']+self.delivery_timeout,
+                'download_attempts': 0, 'selection_attempts': 0, 'polls': 0})
+            self.m.data.pop('library_submission')
+            try:
+                await self.m.save_verified()
+            except BaseException:
+                self.m.data.clear(); self.m.data.update(before)
+                raise
+            return 0
+        t = self.m.data.get('library_transaction', {})
+        if not self.enabled() or t.get('stage') not in self.delivery_stages:
+            return None
+        now = time.time()
+        d = t.get('delivery', {})
+        if d and now < d.get('started_at', now)-5:
+            await self.stop_delivery('delivery_error', 'Clock moved backwards; delivery paused for review')
+            return None
+        if not d:
+            await self.progress('ready', started_at=now, deadline=now+self.delivery_timeout,
+                                download_attempts=0, selection_attempts=0, polls=0)
+            d = self.m.data['library_transaction']['delivery']
+        # Read-only fresh evidence always precedes retries, including lost replies.
+        try:
+            selected, stored, items = await asyncio.wait_for(self.snapshot(), self.command_timeout)
+        except Exception:
+            failures = d.get('snapshot_failures', 0) + 1
+            if failures >= 3 or now >= d['deadline']:
+                await self.stop_delivery('delivery_error', 'Fresh device/catalogue observation failed')
+                return None
+            await self.progress(d['phase'], snapshot_failures=failures)
+            return 3
+        if self.restoration_active() or self.m.data.get('pending_replacement'):
+            await self.stop_delivery('delivery_error', 'Notification or restoration interrupted delivery')
+            return None
+        index = t.get('new_index')
+        if index is None:
+            if now >= d['deadline']:
+                await self.stop_delivery('delivery_exhausted', 'Registration deadline exhausted; inspect before retry')
+                return None
+            if (t['stage'] != 'prepared' or d.get('registration_attempts', 0)
+                    or self.m.data.get('pending_cloud_registration')
+                    or t['sha256'] in self.m.data.get('cloud_art_uploads', {})):
+                await self.stop_delivery('delivery_error', 'Registration outcome requires explicit reconciliation')
+                return None
+            if self.unsettled(items) or len(items) >= 10 or len(stored) >= 10:
+                await self.stop_delivery('delivery_error', 'Cloud status or capacity changed before registration')
+                return None
+            content = await self.verify(t['new_gallery_id'])
+            if hashlib.sha256(content).hexdigest() != t['sha256']:
+                await self.stop_delivery('delivery_error', 'Saved upload fingerprint changed')
+                return None
+            await self.progress('registering', registration_attempts=1)
+            await self.stage('registering')
+            try:
+                remaining = d['deadline']-time.time()
+                if remaining <= 0:
+                    await self.stop_delivery('delivery_exhausted', 'Registration deadline exhausted; inspect before retry')
+                    return None
+                index = await asyncio.wait_for(self.m.cloud_art(content), min(self.registration_timeout, remaining))
+                _, _, items = await asyncio.wait_for(self.snapshot(), self.command_timeout)
+                if index not in items:
+                    raise FrameError('Registration not visible')
+            except Exception:
+                await self.stop_delivery('delivery_error', 'Registration outcome requires explicit reconciliation')
+                return None
+            await self.stage('awaiting_delivery', new_index=index, new_identity=self.identity(items[index]))
+            return 0
+        if index not in items or self.identity(items[index]) != t.get('new_identity'):
+            await self.stop_delivery('delivery_error', 'Registered image identity changed; no commands sent')
+            return None
+        if set(self.unsettled(items)) - {index}:
+            await self.stop_delivery('delivery_error', 'Unrelated cloud image is unsettled; delivery paused')
+            return None
+        if self.m.data.get('pending_cloud_registration'):
+            await self.stop_delivery('delivery_error', 'Another registration outcome is uncertain; delivery paused')
+            return None
+        await self.verify(t['new_gallery_id'])
+        now = time.time()
+        if selected == index and index in stored:
+            await self.confirm_delivery(index, (selected, stored, items))
+            return None
+        if now >= d['deadline']:
+            await self.stop_delivery('delivery_exhausted', 'Delivery deadline exhausted')
+            return None
+        due = d.get('next_at', 0)
+        if due > now:
+            return min(3, due-now)
+        if index in stored:
+            attempts = d.get('selection_attempts', 0)
+            if d['phase'] == 'waiting_selection' and d.get('polls', 0) < self.selection_polls:
+                await self.progress('waiting_selection', polls=d.get('polls', 0)+1)
+                return 3
+            if attempts >= self.max_attempts:
+                await self.stop_delivery('delivery_exhausted', 'Selection acknowledgement was not verified')
+                return None
+            await self.progress('waiting_selection', selection_attempts=attempts+1, polls=0)
+            try:
+                await asyncio.wait_for(self.m.client.show(index, 'frame1'), self.command_timeout)
+            except Exception:
+                await self.progress('waiting_selection', last_command='selection_reply_lost_or_rejected')
+            return 3
+        if d['phase'] == 'waiting_storage' and d.get('polls', 0) < self.storage_polls:
+            await self.progress('waiting_storage', polls=d.get('polls', 0)+1)
+            return 3
+        if d['phase'] == 'wake_settling':
+            # download() also wakes on frame1; invoke the app's add command only
+            # after our persisted wake-settle interval, without duplicate polling.
+            await self.progress('waiting_storage', polls=0)
+            try:
+                await asyncio.wait_for(self.m.client.invoke(9601, {'0':1, '1':index}), self.command_timeout)
+            except Exception:
+                await self.progress('waiting_storage', last_command='download_reply_lost_or_rejected')
+            return 3
+        attempts = d.get('download_attempts', 0)
+        if attempts >= self.max_attempts:
+            await self.stop_delivery('delivery_exhausted', 'Download acknowledgement was not verified')
+            return None
+        await self.progress('wake_settling', download_attempts=attempts+1, polls=0, next_at=now+5)
+        try:
+            await asyncio.wait_for(self.m.client.invoke(9609), self.command_timeout)
+        except Exception:
+            await self.progress('wake_settling', last_command='wake_reply_lost_or_rejected')
+        return 5
 
     cleanup_stages = ('confirmed', 'device_release', 'device_absent', 'cloud_delete', 'cloud_sync', 'awaiting_absence')
 
@@ -300,7 +581,8 @@ class Library:
     def describe(transaction):
         """Supported diagnostics: no cloud URLs, credentials or artwork bytes."""
         return {**{k: transaction.get(k) for k in ('stage', 'new_index', 'new_gallery_id',
-                    'release_requests', 'delete_requests', 'sync_requests', 'result', 'error')},
+                    'release_requests', 'delete_requests', 'sync_requests', 'result', 'error', 'delivery')},
+                'operation_id': transaction.get('operation_id') or transaction.get('request_sha256') or transaction.get('sha256'),
                 'previous_index': (transaction.get('previous') or {}).get('index'),
                 'previous_backed_up': bool((transaction.get('previous') or {}).get('gallery_id'))}
 
@@ -470,3 +752,6 @@ class Library:
         transaction['stage'] = 'awaiting_absence'
         await self.m.save_verified()
 
+    async def cleanup_device_slots(self, indices):
+        """Excluded installation-specific migration bridge; fail closed."""
+        raise FrameError('Installation-specific device migration is not included in this source export')
