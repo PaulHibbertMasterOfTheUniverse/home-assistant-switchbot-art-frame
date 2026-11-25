@@ -8,6 +8,16 @@ import uuid
 class FrameError(Exception):
     """A request failed without exposing response bodies or credentials."""
 
+async def bounded_json(response, limit):
+    data = bytearray()
+    while True:
+        chunk = await response.content.read(min(8192, limit + 1 - len(data)))
+        if not chunk:
+            return json.loads(data)
+        data.extend(chunk)
+        if len(data) > limit:
+            raise ValueError('Response too large')
+
 class AppClient:
     def __init__(self, http, seed):
         self.http = http
@@ -19,6 +29,11 @@ class AppClient:
         self.device = seed['device_id']
         self.group = seed['group_id']
         self.auth_lock = asyncio.Lock()
+        self.mode_references = set()
+        self.mode_references_complete = False
+        self._live_transports = set()
+        self._live_closing = False
+        self._restore_profile_enabled = False
 
     async def authenticate(self, force=False):
         async with self.auth_lock:
@@ -69,6 +84,99 @@ class AppClient:
             error.result_code=result.get('resultCode')
             raise error
         return result.get('data')
+
+    def uses_live_original(self):
+        return self._restore_profile_enabled and self.seed.get('region', 'eu') == 'eu'
+
+    def require_complete_mode_references(self):
+        if not self.mode_references_complete:
+            raise FrameError('Fresh mode references are undecoded; no cleanup allowed')
+
+    async def original_restore_state(self, manager):
+        """Fresh status for notification cleanup; no shadow membership fallback."""
+        from .original_snapshot import OriginalSnapshot
+        snapshot_reader = OriginalSnapshot(manager)
+        snapshot_reader.supported()
+        self._restore_profile_enabled = True
+        try:
+            snapshot = await snapshot_reader.read()
+        except FrameError as error:
+            if str(error) != 'Live query unverified; no retry was sent':
+                raise
+            await self.authenticate(force=True)
+            snapshot = await snapshot_reader.read()
+        return {'9601': {'value': snapshot['selected_index']},
+                '9603': {'value': snapshot['mode_code']},
+                '9606': {'value': snapshot['stored_indices']},
+                '_live': OriginalSnapshot.describe(snapshot)}
+
+    async def policy_certificate(self, client_id, expected_user):
+        """Normal app provisioning; separate captured host, one request, no replay."""
+        from .live_reply import account_id
+        if not self.uses_live_original() or self._live_closing:
+            raise FrameError('Live original-frame diagnostics are not enabled')
+        await self.authenticate()
+        if account_id(self.headers.get('authorization')) != expected_user:
+            raise FrameError('MQTT account changed; no provisioning attempted')
+        headers = {k: v for k, v in self.headers.items()
+                   if k.lower() not in ('content-length', 'accept-encoding', 'requestid')}
+        try:
+            async with self.http.post('https://wonder.eu.api.switchbot.net/wonder/user/policyCer',
+                    json={'clientID': client_id, 'MQTTSelfSigned': True}, headers=headers,
+                    timeout=15, allow_redirects=False) as response:
+                if response.status != 200:
+                    raise ValueError
+                # Bound credential response before JSON/base64 allocations.
+                result = await bounded_json(response, 131072)
+            if (type(result.get('statusCode')) is not int or result['statusCode'] != 100
+                    or not isinstance(result.get('body'), str)):
+                raise ValueError
+            p12 = base64.b64decode(result['body'], validate=True)
+            if not 1 <= len(p12) <= 65536:
+                raise ValueError
+            return p12
+        except Exception:
+            raise FrameError('MQTT certificate provisioning failed; no fallback or retry') from None
+
+    async def invoke_live_read(self, function, request, topic, expected_user):
+        """HTTP acceptance only. The transport separately verifies the IoT reply."""
+        from .live_reply import account_id, READ_FUNCTIONS
+        if (not self.uses_live_original() or self._live_closing
+                or type(function) is not int or function not in READ_FUNCTIONS):
+            raise FrameError('Only explicit original-frame live reads are enabled')
+        await self.authenticate()
+        if account_id(self.headers.get('authorization')) != expected_user:
+            raise FrameError('MQTT account changed; no device query sent')
+        try:
+            # Topic and client UUID binding is constructed by LiveReplyTransport.
+            suffix = topic.removeprefix(f'v1_1/{expected_user}/').removesuffix('/response')
+            if topic != f'v1_1/{expected_user}/{str(uuid.UUID(suffix)).upper()}/response':
+                raise ValueError
+            if request != str(uuid.UUID(request)).upper():
+                raise ValueError
+            body = {k: v for k, v in self.seed['session']['template'].items()
+                    if k not in ('params', 'requestID', 'functionID', 'notify')}
+            body.update(deviceID=self.device, functionID=function, requestID=request,
+                        notify={'type': 'mqtt', 'url': topic})
+            headers = {k: v for k, v in self.headers.items()
+                       if k.lower() not in ('content-length', 'accept-encoding', 'requestid')}
+            headers['requestid'] = request
+            async with self.http.post(self.base+'/command/cmd/api/v1/func/invoke',
+                    json=body, headers=headers, timeout=10, allow_redirects=False) as response:
+                if response.status != 200:
+                    raise ValueError
+                result = await bounded_json(response, 16384)
+            if (type(result.get('resultCode')) is not int or result['resultCode'] != 100
+                    or result.get('data') != request):
+                raise ValueError
+            return result['data']
+        except Exception:
+            raise FrameError('Live query acceptance unverified; no retry was sent') from None
+
+    async def close_live(self):
+        """Shutdown/unload hook; no reconnect and no new sessions after closing."""
+        self._live_closing = True
+        await asyncio.gather(*(t.aclose() for t in tuple(self._live_transports)))
 
     async def communication_key(self):
         await self.authenticate()

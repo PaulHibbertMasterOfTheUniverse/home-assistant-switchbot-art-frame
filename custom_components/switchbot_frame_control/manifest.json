@@ -1,14 +1,16 @@
 {
   "domain": "switchbot_frame_control",
   "name": "SwitchBot Frame Control",
-  "version": "0.7.2-beta.1",
+  "version": "0.7.3-beta.1",
   "documentation": "https://github.com/PaulHibbertMasterOfTheUniverse/home-assistant-switchbot-art-frame",
   "dependencies": [
     "http",
     "frontend",
     "bluetooth"
   ],
-  "requirements": [],
+  "requirements": [
+    "paho-mqtt==2.1.0"
+  ],
   "iot_class": "cloud_polling",
   "codeowners": [],
   "config_flow": true,
