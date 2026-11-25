@@ -1,3 +1,12 @@
+# 0.7.3-beta.1 — 25 November 2026
+
+- Fix bin restoration leaving uploads blocked after the normal picture has already returned. Detach a verified stale static-mode notification reference before releasing that notification copy; only clear restoration after confirmed removal.
+- Save bounded mode-repair intent across restarts. Unknown modes, conflicting references, changed selection and unverified outcomes remain protected.
+- Read fresh, request-bound original-frame status for bin cleanup instead of relying on cloud shadow membership. Retry an unverified status read once after refreshing the existing account session; never replay an image command as part of that retry.
+- The optional bin automation remains limited to original 31.5-inch Wi-Fi frames; its new live restoration reader is currently EU-account only, firmware 1.2/1.4. Unsupported regions or wire formats stop with the restoration record retained.
+- Ordinary uploads and Frame 2 Bluetooth control are unchanged. This release does not claim new hardware coverage.
+- Include synthetic transport, TLS, parser, restart and cleanup-order regression tests. Public certificate asset contains no private key or household credentials.
+
 # 0.7.2-beta.1 — 20 November 2026
 
 - Optional original 31.5-inch Wi-Fi library sends now save the source and return pending before image preparation, registration and delivery waits. A bounded background worker resumes after restart and retries the same registration without creating another album entry.

@@ -26,3 +26,11 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ```
+
+## SwitchBot production CA certificate
+
+`assets/prd_ca.pem` is the public vendor production CA used solely to verify the authenticated device-status connection. It contains no account certificate or private key. Its exact SHA256 is checked by both runtime and public-package validation.
+
+## Paho MQTT
+
+The optional live bin-restoration status path uses paho-mqtt 2.1.0 (Eclipse Public License 2.0 / Eclipse Distribution License 1.0), installed from PyPI by Home Assistant.
