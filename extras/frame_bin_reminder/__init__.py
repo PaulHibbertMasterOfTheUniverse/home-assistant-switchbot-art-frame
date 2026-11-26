@@ -304,12 +304,44 @@ class Reminder:
 
     async def wait_released(self,index):
         for _ in range(30):
-            state = await self.manager.client.reported_state()
+            state = await self.restoration_state()
             stored = state.get('9606',{}).get('value')
             if isinstance(stored,list) and index not in stored:
                 return state
             await asyncio.sleep(3)
         raise HomeAssistantError('Notification is still stored on the frame; cleanup remains pending')
+
+    async def restoration_state(self):
+        return await self.manager.client.original_restore_state(self.manager)
+
+    async def detach_notification_reference(self, state, snapshot, slot_index, index):
+        client = self.manager.client
+        client.require_complete_mode_references()
+        if slot_index not in client.mode_references:
+            return state
+        live = state.get('_live', {})
+        stored = state.get('9606', {}).get('value')
+        if (live.get('mode_code') != 0 or set(client.mode_references) != {slot_index}
+                or state.get('9601', {}).get('value') != index
+                or not isinstance(stored, list) or index not in stored):
+            raise HomeAssistantError('Bin cleanup needs the restored picture selected in static mode; no mode change sent')
+        repair = snapshot.setdefault('mode_reference_repair', {'index': index, 'slot': slot_index, 'attempts': 0})
+        if (repair.get('index') != index or repair.get('slot') != slot_index
+                or type(repair.get('attempts')) is not int or not 0 <= repair['attempts'] <= 2):
+            raise HomeAssistantError('Bin mode-repair record does not match this restoration')
+        if repair['attempts'] >= 2:
+            raise HomeAssistantError('Bin mode-reference repair was not confirmed after two attempts; no further command sent')
+        repair['attempts'] += 1
+        await self.save()
+        await client.invoke(9604, {'0': index, '1': 0, '2': 0})
+        state = await self.restoration_state()
+        client.require_complete_mode_references()
+        stored = state.get('9606', {}).get('value')
+        if (slot_index in client.mode_references
+                or state.get('9601', {}).get('value') != index
+                or not isinstance(stored, list) or index not in stored):
+            raise HomeAssistantError('Bin mode-reference change is not yet confirmed; no picture removed')
+        return state
 
     async def restore(self):
         async with self.lock, self.manager.lock:
@@ -323,7 +355,7 @@ class Reminder:
             snapshot['restore_requested'] = True
             await self.save()
             self.publish('restoring')
-            state = await self.manager.client.reported_state()
+            state = await self.restoration_state()
             catalogue = await self.manager.client.catalogue()
             cloud_before = {item['imageIndex'] for item in catalogue}
             if index not in cloud_before:
@@ -331,17 +363,22 @@ class Reminder:
             stored = state.get('9606',{}).get('value')
             if not (state.get('9601',{}).get('value') == index and isinstance(stored,list) and index in stored):
                 await self.manager.client.refresh_image(index,trace=self.record_refresh)
-                state = await self.manager.client.reported_state()
+                state = await self.restoration_state()
             # Preserve the exact selected image; do not substitute a default slideshow.
             for _ in range(40):
                 stored = state.get('9606',{}).get('value')
                 if state.get('9601',{}).get('value') == index and isinstance(stored,list) and index in stored:
                     break
                 await asyncio.sleep(3)
-                state = await self.manager.client.reported_state()
+                state = await self.restoration_state()
             else:
                 raise HomeAssistantError('Previous picture selection not yet confirmed; retry remains pending')
             if slot_index in stored:
+                state = await self.detach_notification_reference(state, snapshot, slot_index, index)
+                stored = state.get('9606', {}).get('value')
+                self.manager.client.require_complete_mode_references()
+                if slot_index in self.manager.client.mode_references:
+                    raise HomeAssistantError('Notification slot is mode-referenced; retain it rather than release')
                 await self.manager.client.invoke(9609)
                 await asyncio.sleep(5)
                 await self.manager.client.invoke(9601,{'0':2,'1':slot_index})
